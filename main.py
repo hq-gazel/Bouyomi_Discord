@@ -1,0 +1,109 @@
+"""Bouyomi_Discord エントリポイント。
+
+Twitchコメントを取得し、Irodori-TTSサイドカーサーバーで音声合成した上で、
+Discord BOTがボイスチャンネルで読み上げる常駐アプリケーションの起動処理。
+
+起動時にIrodori-TTSサイドカーサーバー(tts_server.py)をsubprocessとして
+別インタプリタ(settings.irodori_tts_venv_python)で立ち上げ、healthyになる
+のを待ってから、Discord BOTとTwitch BOTを並行実行する。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from lib.bridge import LatestOnlyBridge
+from lib.config import Settings, load_settings
+from lib.discord_bot import DiscordVoiceBot
+from lib.tts_client import TtsClient
+from lib.twitch_bot import TwitchChatBot
+
+_PROJECT_ROOT = Path(__file__).parent
+_TTS_SERVER_PATH = _PROJECT_ROOT / "tts_server.py"
+# TTSサーバーはモデルロードに数分かかりうるため、余裕を持ったタイムアウトにする。
+_TTS_HEALTHY_TIMEOUT_SECONDS = 180.0
+_TTS_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
+def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
+    """Irodori-TTSサイドカーサーバーをsubprocessとして起動する。
+
+    tts_server.py は lib.config をimportできない設計のため、必要な設定は
+    環境変数経由で渡す。
+    """
+    env = os.environ.copy()
+    env["IRODORI_TTS_DIR"] = settings.irodori_tts_dir
+    if settings.irodori_tts_hf_checkpoint:
+        env["IRODORI_TTS_HF_CHECKPOINT"] = settings.irodori_tts_hf_checkpoint
+    if settings.irodori_tts_checkpoint:
+        env["IRODORI_TTS_CHECKPOINT"] = settings.irodori_tts_checkpoint
+    env["IRODORI_TTS_REF_WAV"] = settings.irodori_tts_ref_wav
+    env["TTS_SERVER_HOST"] = settings.tts_server_host
+    env["TTS_SERVER_PORT"] = str(settings.tts_server_port)
+
+    return subprocess.Popen(
+        [settings.irodori_tts_venv_python, str(_TTS_SERVER_PATH)],
+        cwd=str(_PROJECT_ROOT),
+        env=env,
+    )
+
+
+def _stop_tts_server_process(proc: subprocess.Popen[bytes]) -> None:
+    """TTSサイドカーサブプロセスを終了する(terminate優先、タイムアウト時はkill)。"""
+    if proc.poll() is not None:
+        return
+
+    proc.terminate()
+    try:
+        proc.wait(timeout=_TTS_SHUTDOWN_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
+async def main() -> None:
+    try:
+        settings = load_settings()
+    except RuntimeError as e:
+        print(f"設定エラー: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("[main] Irodori-TTSサイドカーサーバーを起動しています...")
+    tts_process = _start_tts_server_process(settings)
+
+    tts_client = TtsClient(host=settings.tts_server_host, port=settings.tts_server_port)
+
+    try:
+        await tts_client.wait_until_healthy(timeout=_TTS_HEALTHY_TIMEOUT_SECONDS)
+    except TimeoutError as e:
+        print(f"TTSサーバー起動エラー: {e}", file=sys.stderr)
+        _stop_tts_server_process(tts_process)
+        sys.exit(1)
+
+    print("[main] Irodori-TTSサイドカーサーバーの起動を確認しました。")
+
+    bridge = LatestOnlyBridge()
+    discord_bot = DiscordVoiceBot(settings, bridge, tts_client)
+    twitch_bot = TwitchChatBot(settings, bridge)
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(discord_bot.run())
+            tg.create_task(twitch_bot.run())
+    finally:
+        print("[main] シャットダウン処理を開始します...")
+        await discord_bot.shutdown()
+        await twitch_bot.shutdown()
+        _stop_tts_server_process(tts_process)
+        print("[main] シャットダウン完了。")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
