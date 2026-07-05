@@ -10,7 +10,7 @@ Twitchのコメントを取得し、Irodori-TTSで音声合成した上でDiscor
 - 取得したコメントをIrodori-TTS(別プロジェクト)に渡して音声合成する
 - 合成した音声をDiscord Bot経由でボイスチャンネルに再生する
 
-## 事前準備
+## セットアップ手順
 
 上から順番に進めればOK。
 
@@ -53,9 +53,7 @@ pwsh -NoProfile -File tools\sync_irodori_gpu.ps1
 
 `-IrodoriDir` を省略した場合は `.env` の `IRODORI_TTS_DIR` を使用する。
 
-## セットアップ手順
-
-### 1. 依存関係のインストール
+### 7. 依存関係のインストール
 
 本プロジェクトは [uv](https://docs.astral.sh/uv/) でPython環境・パッケージを管理する。
 
@@ -65,10 +63,10 @@ uv sync
 
 Python 3.12系を使用する(discord.py / PyNaCl / TwitchIOのPython 3.14対応が不透明なため)。`.python-version` で固定済み。
 
-### 2. output.wavを作成
+### 8. output.wavを作成
 元になる録音データ（数秒で問題ない）を用意する。
 
-### 3. 環境変数の設定
+### 9. 環境変数の設定
 
 `.env.example` を `.env` にコピーし、各値を実際の設定に置き換える。
 
@@ -78,13 +76,17 @@ Copy-Item .env.example .env
 
 `.env` は `.gitignore` により管理対象外のため、実際のトークン等は `.env` にのみ記載すること。
 
-### 4. 起動
+### 10. 起動
 
 ```powershell
 uv run main.py
 ```
 
-起動すると、まずIrodori-TTSサイドカーサーバー(`tts_server.py`)を `IRODORI_TTS_VENV_PYTHON` で指定したインタプリタでsubprocessとして自動起動し、モデルロードが完了して `/health` が応答可能になるまで待機する(最大180秒)。その後Discord BOTとTwitch BOTが並行して起動する。終了時(Ctrl+C等)は、Discord/Twitch BOTの切断とTTSサイドカーサーバーの終了を行ってから終了する。
+起動すると、まずIrodori-TTSサイドカーサーバー(`tts_server.py`)を `IRODORI_TTS_VENV_PYTHON` で指定したインタプリタでsubprocessとして自動起動し、モデルロードが完了して `/health` が応答可能になるまで待機する(最大180秒)。その後Discord BOTとTwitch BOTが並行して起動する。
+
+終了時(Ctrl+C等)は、Discord/Twitch BOTの切断とTTSサイドカーサーバーの終了を行ってから終了する。
+
+まぁ、要するに何も考えずに次回からはrun.batを使って起動して、ターミナル上はCTRL + Cで終了するってこった。
 
 ## 環境変数(.env)の主要項目
 
