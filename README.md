@@ -33,19 +33,11 @@ Twitchの仕様は変わりやすいので、詳細は都度公式ドキュメ�
 
 本プロジェクトとは別に、Irodori-TTS本体が任意のディレクトリ(`.env` の `IRODORI_TTS_DIR` で指定するパス)にセットアップ済みで、専用の `.venv` が構築されていることが前提。Bouyomi_Discord自身のvenvにはIrodori-TTSの重い依存関係(torch等)は含めない。
 
-### 5. Irodori-TTS側venvに追加パッケージを入れる
-
-本プロジェクトの `tts_server.py` はIrodori-TTSの `.venv` のPythonで起動するFastAPIサーバーだが、`fastapi` / `uvicorn` / `setuptools`(dacvaeのビルドに必要)はIrodori-TTS本体の依存関係には含まれていないため、Irodori-TTS側の `.venv` に追加でインストールしておく必要がある(Irodori-TTS本体の `pyproject.toml` は変更しないこと)。
-
-```powershell
-& "<irodori-TTSが入ってるとこ>\.venv\Scripts\python.exe" -m pip install fastapi "uvicorn[standard]" setuptools
-```
-
 ※Irodori-TTS側で後日 `uv sync` を実行すると、`pyproject.toml` に記載の無いこれらのパッケージが再インストール時に失われる可能性があるため、その場合は上記コマンドを再実行すること。
 
-### 6. GPU(CUDA)構成に同期する(必須)
+### 5. irodori-tts側設定を変更する
 
-Irodori-TTSはCPU版torchでは動作しない(GPU必須)。依存ライブラリをインストールしたりする為、[tools/sync_irodori_gpu.ps1](tools/sync_irodori_gpu.ps1) を実行して同期する。内部で `uv sync --extra cu128` を実行した後、上記の追加パッケージを入れ直し、主要パッケージのimport確認とGPU認識状況を表示する。
+Irodori-TTSはCPU版torchでは動作しない(GPU必須)。依存ライブラリをインストールしたりする為、[tools/sync_irodori_gpu.ps1](tools/sync_irodori_gpu.ps1) を実行して同期する。これは、内部で `uv sync --extra cu128` を実行した後、依存ライブラリを入れて、主要ライブラリのimport確認とGPU認識状況を表示する。
 
 ```powershell
 pwsh -NoProfile -File tools\sync_irodori_gpu.ps1
@@ -53,7 +45,7 @@ pwsh -NoProfile -File tools\sync_irodori_gpu.ps1
 
 `-IrodoriDir` を省略した場合は `.env` の `IRODORI_TTS_DIR` を使用する。
 
-### 7. 依存関係のインストール
+### 6. 依存関係のインストール
 
 本プロジェクトは [uv](https://docs.astral.sh/uv/) でPython環境・パッケージを管理する。
 
@@ -63,10 +55,10 @@ uv sync
 
 Python 3.12系を使用する(discord.py / PyNaCl / TwitchIOのPython 3.14対応が不透明なため)。`.python-version` で固定済み。
 
-### 8. output.wavを作成
+### 7. output.wavを作成
 元になる録音データ（数秒で問題ない）を用意する。
 
-### 9. 環境変数の設定
+### 8. 環境変数の設定
 
 `.env.example` を `.env` にコピーし、各値を実際の設定に置き換える。
 
@@ -76,7 +68,7 @@ Copy-Item .env.example .env
 
 `.env` は `.gitignore` により管理対象外のため、実際のトークン等は `.env` にのみ記載すること。
 
-### 10. 起動
+### 9. 起動
 
 ```powershell
 uv run main.py
