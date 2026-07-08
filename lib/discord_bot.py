@@ -37,6 +37,10 @@ class DiscordVoiceBot:
         # 管理者を追いかけて接続している VoiceClient(未接続なら None)。
         # 複数ギルド同時対応は不要なので、単一の VoiceClient のみ保持する。
         self._voice_client: discord.VoiceClient | None = None
+        # イベント駆動のon_voice_state_updateと定期ポーリングの
+        # _reconcile_loop_bodyがself._voice_clientを同時にチェック→await→代入
+        # する競合(TOCTOU、二重connect)を防ぐための排他ロック。
+        self._voice_lock = asyncio.Lock()
 
         intents = discord.Intents.default()
         # 管理者のボイス状態変化・メンバー情報を取得するために必須。
@@ -109,21 +113,22 @@ class DiscordVoiceBot:
         if member.id != self._settings.discord_admin_user_id:
             return
 
-        if after.channel is not None:
-            # 管理者が(別の)VCに入室/移動した
-            if (
-                self._voice_client is not None
-                and self._voice_client.is_connected()
-            ):
-                if self._voice_client.channel.id != after.channel.id:
-                    await self._voice_client.move_to(after.channel)
+        async with self._voice_lock:
+            if after.channel is not None:
+                # 管理者が(別の)VCに入室/移動した
+                if (
+                    self._voice_client is not None
+                    and self._voice_client.is_connected()
+                ):
+                    if self._voice_client.channel.id != after.channel.id:
+                        await self._voice_client.move_to(after.channel)
+                else:
+                    self._voice_client = await after.channel.connect()
             else:
-                self._voice_client = await after.channel.connect()
-        else:
-            # 管理者が全VCから退出した
-            if self._voice_client is not None and self._voice_client.is_connected():
-                await self._voice_client.disconnect()
-            self._voice_client = None
+                # 管理者が全VCから退出した
+                if self._voice_client is not None and self._voice_client.is_connected():
+                    await self._voice_client.disconnect()
+                self._voice_client = None
 
     async def _reconcile_admin_voice_state(self) -> None:
         """管理者の現在のVC在室状況を能動的にチェックし、BOTの接続状態を同期する。
@@ -133,36 +138,42 @@ class DiscordVoiceBot:
         """
         admin_id = self._settings.discord_admin_user_id
 
-        member: discord.Member | None = None
-        if self._settings.discord_guild_id is not None:
-            guild = self._client.get_guild(self._settings.discord_guild_id)
-            if guild is not None:
-                member = guild.get_member(admin_id)
-        else:
-            for guild in self._client.guilds:
-                found = guild.get_member(admin_id)
-                if found is not None:
-                    member = found
-                    break
-
-        if member is not None and member.voice is not None and member.voice.channel is not None:
-            target_channel = member.voice.channel
-            if self._voice_client is not None and self._voice_client.is_connected():
-                if self._voice_client.channel.id != target_channel.id:
-                    await self._voice_client.move_to(target_channel)
+        async with self._voice_lock:
+            member: discord.Member | None = None
+            if self._settings.discord_guild_id is not None:
+                guild = self._client.get_guild(self._settings.discord_guild_id)
+                if guild is not None:
+                    member = guild.get_member(admin_id)
             else:
-                self._voice_client = await target_channel.connect()
-        else:
-            # 管理者がどのVCにもいない場合、接続中なら切断しておく。
-            if self._voice_client is not None and self._voice_client.is_connected():
-                await self._voice_client.disconnect()
-            self._voice_client = None
+                for guild in self._client.guilds:
+                    found = guild.get_member(admin_id)
+                    if found is not None:
+                        member = found
+                        break
+
+            if member is not None and member.voice is not None and member.voice.channel is not None:
+                target_channel = member.voice.channel
+                if self._voice_client is not None and self._voice_client.is_connected():
+                    if self._voice_client.channel.id != target_channel.id:
+                        await self._voice_client.move_to(target_channel)
+                else:
+                    self._voice_client = await target_channel.connect()
+            else:
+                # 管理者がどのVCにもいない場合、接続中なら切断しておく。
+                if self._voice_client is not None and self._voice_client.is_connected():
+                    await self._voice_client.disconnect()
+                self._voice_client = None
 
     async def _before_reconcile_loop(self) -> None:
         await self._client.wait_until_ready()
 
     async def _reconcile_loop_body(self) -> None:
-        await self._reconcile_admin_voice_state()
+        # tasks.Loopは未捕捉例外が飛ぶとループ自体が永久停止するため、
+        # ここで握って自己修復ポーリングが止まらないようにする。
+        try:
+            await self._reconcile_admin_voice_state()
+        except Exception as e:
+            print(f"[discord_bot] 定期同期処理でエラーが発生しました: {e}")
 
     async def _consume_loop(self) -> None:
         """Twitchコメント(のTTS音声)を取り出し、順次VCで再生し続けるループ。"""
@@ -171,13 +182,13 @@ class DiscordVoiceBot:
             print(f"[discord_bot] TTS合成を開始します: {text!r}")
             try:
                 wav_bytes = await self._tts_client.synthesize(text)
-            except (RuntimeError, TimeoutError) as e:
+            except Exception as e:
                 print(f"[discord_bot] TTS合成に失敗しました: {e}")
                 continue
             print(f"[discord_bot] TTS合成完了({len(wav_bytes)} bytes)。再生します。")
             try:
                 await self._play(wav_bytes)
-            except discord.DiscordException as e:
+            except Exception as e:
                 print(f"[discord_bot] 音声再生に失敗しました: {e}")
                 continue
             print("[discord_bot] 再生完了。")
