@@ -1,0 +1,11 @@
+# Windows batch/PowerShellスクリプト向け設定
+# 前提運用: .bat/.ps1は常にUTF-8(BOMなし) + chcp 65001 で保存する
+# working-tree-encoding=UTF-8を明示することで、誤ってShift-JIS(CP932)等で
+# 保存してしまった場合にgit add/commit時にエラーとして検知できる
+# (GitHub上でのサイレントな文字化けをコミット前の段階で防止する)
+
+*.bat text working-tree-encoding=UTF-8 eol=crlf
+*.cmd text working-tree-encoding=UTF-8 eol=crlf
+*.ps1 text working-tree-encoding=UTF-8 eol=crlf
+*.psm1 text working-tree-encoding=UTF-8 eol=crlf
+*.psd1 text working-tree-encoding=UTF-8 eol=crlf
