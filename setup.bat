@@ -5,50 +5,24 @@ setlocal
 rem =====================================================================
 rem  Bouyomi_Discord セットアップスクリプト
 rem
-rem  Irodori-TTS本体の取得・venv構築・.envの雛形コピーまでを自動で行います。
+rem  必要ツール(git/uv/pwsh/ffmpeg)の確認・自動導入、Irodori-TTS本体の
+rem  取得・venv構築、.envの雛形コピーまでを自動で行います。
 rem  実行後、Discord/Twitchのトークンや対象サーバー/チャンネルなどの
 rem  実行に必要な環境変数を設定してください(.envファイルを直接編集)。
 rem =====================================================================
 
-rem ---- 設定 (環境に合わせて必要ならここを変更してください) -----------
-rem Irodori-TTSを配置するパス。デフォルトではセットアップスクリプトと
-rem 同じ階層に作成されます。
-set "IRODORI_DIR=C:\path\to\Irodori-TTS"
-
-rem uvのGPU extra指定。NVIDIA GPU(CUDA)環境なら "cu128" のまま。
-rem CPU環境の場合は "cpu" に変更します。
-set "IRODORI_EXTRA=cu128"
-rem ----------------------------------------------------------------------
-
 set "PROJECT_ROOT=%~dp0"
+set "PROJECT_ROOT_NOSLASH=%PROJECT_ROOT:~0,-1%"
 
 echo.
 echo ===== Bouyomi_Discord セットアップを開始します =====
 echo.
 
-rem ---- 事前チェック: 必要なコマンドの存在確認 ----
-where git >nul 2>&1
-if errorlevel 1 goto NO_GIT
-
-where uv >nul 2>&1
-if errorlevel 1 goto NO_UV
-
+rem ---- 事前チェック: pwshの存在確認 ----
 where pwsh >nul 2>&1
 if errorlevel 1 goto NO_PWSH
 
 goto PRECHECK_OK
-
-:NO_GIT
-echo [エラー] git が見つかりません。Gitをインストールしてから実行してください。
-echo          https://git-scm.com/downloads
-pause
-exit /b 1
-
-:NO_UV
-echo [エラー] uv が見つかりません。uvをインストールしてから実行してください。
-echo          https://docs.astral.sh/uv/getting-started/installation/
-pause
-exit /b 1
 
 :NO_PWSH
 echo [エラー] pwsh (PowerShell 7) が見つかりません。インストールしてから実行してください。
@@ -57,6 +31,37 @@ pause
 exit /b 1
 
 :PRECHECK_OK
+rem ---- 事前チェック: git/uv/ffmpegの確認・自動導入、Irodori-TTS配置先/GPU設定の対話入力 ----
+set "PRECHECK_OUT=%TEMP%\bouyomi_precheck_%RANDOM%.tmp"
+pwsh -NoProfile -ExecutionPolicy Bypass -File "%PROJECT_ROOT%tools\setup_precheck.ps1" -ProjectRoot "%PROJECT_ROOT_NOSLASH%" -OutFile "%PRECHECK_OUT%"
+if errorlevel 1 goto PRECHECK_FAILED
+
+for /f "usebackq tokens=1,* delims==" %%K in ("%PRECHECK_OUT%") do set "%%K=%%L"
+del "%PRECHECK_OUT%" >nul 2>&1
+
+rem git/uvがsetup_precheck.ps1内でwinget自動導入された場合、その更新は
+rem ps1の子プロセス内に閉じており、このsetup.bat自身のPATHには反映されない。
+rem レジストリから読み直して、同一セッション内でもgit/uvコマンドを使えるようにする。
+set "MACHINE_PATH="
+set "USER_PATH="
+for /f "usebackq skip=2 tokens=2,*" %%A in (`reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul`) do set "MACHINE_PATH=%%B"
+for /f "usebackq skip=2 tokens=2,*" %%A in (`reg query "HKCU\Environment" /v Path 2^>nul`) do set "USER_PATH=%%B"
+if defined MACHINE_PATH if defined USER_PATH set "PATH=%MACHINE_PATH%;%USER_PATH%"
+if defined MACHINE_PATH if not defined USER_PATH set "PATH=%MACHINE_PATH%"
+
+echo.
+echo   Irodori-TTS配置先: %IRODORI_DIR%
+echo   GPU extra        : %IRODORI_EXTRA%
+
+goto PRECHECK_DONE
+
+:PRECHECK_FAILED
+echo.
+echo [エラー] 事前チェックに失敗しました。上記メッセージを確認してください。
+pause
+exit /b 1
+
+:PRECHECK_DONE
 rem ---- 1. Irodori-TTS本体の取得 ----
 echo [1/6] Irodori-TTS本体を確認しています...
 if exist "%IRODORI_DIR%\pyproject.toml" goto SKIP_CLONE

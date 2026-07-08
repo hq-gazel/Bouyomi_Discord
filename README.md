@@ -12,63 +12,45 @@ Twitchのコメントを取得し、Irodori-TTSで音声合成した上でDiscor
 
 ## セットアップ手順
 
-上から順番に進めればOK。
+### クイックセットアップ (推奨)
 
-### 1. ffmpeg を入れる
+`setup.bat` を実行するだけで、以下が自動化される。
 
-Discord BOTの音声再生に必須。[公式サイト](https://ffmpeg.org/download.html)等からインストールし、PATHに追加するか、`.env` の `FFMPEG_PATH` に実行ファイルの絶対パスを設定する。
+```
+setup.bat
+```
 
-### 2. Discord Bot を用意する
+- git / uv / pwsh (PowerShell 7) / ffmpeg の有無確認と、winget経由での自動インストール提案
+- Irodori-TTS本体の取得(未取得の場合)とGPU(CUDA)向け依存関係の構築
+- TTSサイドカーサーバー用の追加パッケージ(fastapi / uvicorn)のインストール
+- Bouyomi_Discord自身の依存関係インストール(`uv sync`)
+- `.env` の雛形生成、および `IRODORI_TTS_DIR` / `IRODORI_TTS_VENV_PYTHON` の自動入力
+
+実行中に、Irodori-TTSの配置先パスとGPU使用有無を対話で尋ねられるので、その場で回答する。
+
+以下は `setup.bat` では自動化できない残りの手順。上から順番に進めればOK。
+
+### 1. Discord Bot を用意する
 
 Discord Developer Portalで対象アプリケーションの `Bot` 設定画面を開き、**SERVER MEMBERS INTENT** を有効化する(管理者のVC入退室・メンバー情報取得に必須)。あわせてBOTをVCへの接続権限付きで対象サーバーに招待しておく。
 
-### 3. Twitch OAuthトークンを発行する
+### 2. Twitch OAuthトークンを発行する
 
 Twitchの仕様は変わりやすいので、詳細は都度公式ドキュメント等で確認すること。おおまかな流れ:
 
 - [twitchtokengenerator.com](https://twitchtokengenerator.com/) 等で、チャット読み取りに必要なスコープ(`chat:read` 等)を持つBOTアカウント用のOAuthトークンを発行する
 - `oauth:` から始まる形式のまま `.env` の `TWITCH_OAUTH_TOKEN` に設定する
 
-### 4. Irodori-TTS 本体をセットアップする
-
-本プロジェクトとは別に、Irodori-TTS本体が任意のディレクトリ(`.env` の `IRODORI_TTS_DIR` で指定するパス)にセットアップ済みで、専用の `.venv` が構築されていることが前提。Bouyomi_Discord自身のvenvにはIrodori-TTSの重い依存関係(torch等)は含めない。
-
-※Irodori-TTS側で後日 `uv sync` を実行すると、`pyproject.toml` に記載の無いこれらのパッケージが再インストール時に失われる可能性があるため、その場合は上記コマンドを再実行すること。
-
-### 5. irodori-tts側設定を変更する
-
-Irodori-TTSはCPU版torchでは動作しない(GPU必須)。依存ライブラリをインストールしたりする為、[tools/sync_irodori_gpu.ps1](tools/sync_irodori_gpu.ps1) を実行して同期する。これは、内部で `uv sync --extra cu128` を実行した後、依存ライブラリを入れて、主要ライブラリのimport確認とGPU認識状況を表示する。
-
-```powershell
-pwsh -NoProfile -File tools\sync_irodori_gpu.ps1
-```
-
-`-IrodoriDir` を省略した場合は `.env` の `IRODORI_TTS_DIR` を使用する。
-
-### 6. 依存関係のインストール
-
-本プロジェクトは [uv](https://docs.astral.sh/uv/) でPython環境・パッケージを管理する。
-
-```powershell
-uv sync
-```
-
-Python 3.12系を使用する(discord.py / PyNaCl / TwitchIOのPython 3.14対応が不透明なため)。`.python-version` で固定済み。
-
-### 7. output.wavを作成
+### 3. output.wavを作成
 元になる録音データ（数秒で問題ない）を用意する。
 
-### 8. 環境変数の設定
+### 4. .envの残りの項目を設定する
 
-`.env.example` を `.env` にコピーし、各値を実際の設定に置き換える。
-
-```powershell
-Copy-Item .env.example .env
-```
+`setup.bat` 実行後に生成された `.env` を開き、Discord/Twitchのトークンや `IRODORI_TTS_REF_WAV` など、自動入力されない項目を入力する。
 
 `.env` は `.gitignore` により管理対象外のため、実際のトークン等は `.env` にのみ記載すること。
 
-### 9. 起動
+### 5. 起動
 
 ```powershell
 uv run main.py
