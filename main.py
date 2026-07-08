@@ -52,11 +52,19 @@ def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
     )
 
 
-def _stop_tts_server_process(proc: subprocess.Popen[bytes]) -> None:
-    """TTSサイドカーサブプロセスを終了する(terminate優先、タイムアウト時はkill)。"""
+async def _stop_tts_server_process(
+    proc: subprocess.Popen[bytes], tts_client: TtsClient
+) -> None:
+    """TTSサイドカーサブプロセスを終了する(terminate優先、タイムアウト時はkill)。
+
+    Windowsではterminate()/kill()が猶予なく即死させ、TTSサーバー側のlifespan
+    シャットダウンフックが実行されないため、強制終了前に/shutdown経由で
+    明示的にクリーンアップを完了させる。
+    """
     if proc.poll() is not None:
         return
 
+    await tts_client.shutdown()
     proc.terminate()
     try:
         proc.wait(timeout=_TTS_SHUTDOWN_TIMEOUT_SECONDS)
@@ -81,7 +89,7 @@ async def main() -> None:
         await tts_client.wait_until_healthy(timeout=_TTS_HEALTHY_TIMEOUT_SECONDS)
     except TimeoutError as e:
         print(f"TTSサーバー起動エラー: {e}", file=sys.stderr)
-        _stop_tts_server_process(tts_process)
+        await _stop_tts_server_process(tts_process, tts_client)
         sys.exit(1)
 
     print("[main] Irodori-TTSサイドカーサーバーの起動を確認しました。")
@@ -98,7 +106,7 @@ async def main() -> None:
         print("[main] シャットダウン処理を開始します...")
         await discord_bot.shutdown()
         await twitch_bot.shutdown()
-        _stop_tts_server_process(tts_process)
+        await _stop_tts_server_process(tts_process, tts_client)
         print("[main] シャットダウン完了。")
 
 

@@ -49,6 +49,19 @@ class TtsClient:
             )
         return response.content
 
+    async def shutdown(self) -> None:
+        """POST /shutdown を呼び出し、TTSサーバー側のクリーンアップを完了させる。
+
+        WindowsではPopen.terminate()/kill()が猶予なく即死させるため、強制終了
+        前にこれを呼んでlifespanのシャットダウンフック相当の処理を実行させる。
+        サーバーが既に停止/未起動の場合の接続エラーは無視して安全に呼べる。
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_HEALTH_CHECK_TIMEOUT_SECONDS) as client:
+                await client.post(f"{self._base_url}/shutdown")
+        except httpx.RequestError:
+            pass
+
     async def wait_until_healthy(self, timeout: float = 120.0, interval: float = 1.0) -> None:
         """GET /health を timeout秒に達するまで interval秒間隔でポーリングする。
 

@@ -38,6 +38,7 @@ if _IRODORI_TTS_DIR and _IRODORI_TTS_DIR not in sys.path:
     sys.path.insert(0, _IRODORI_TTS_DIR)
 
 import torch  # noqa: E402
+import torchaudio  # noqa: E402
 from huggingface_hub import hf_hub_download  # noqa: E402
 
 from irodori_tts.inference_runtime import (  # noqa: E402
@@ -117,16 +118,31 @@ def _detect_model_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _load_reference_wav(path: str) -> tuple[torch.Tensor, int]:
+    """torchaudio.load()で読み込み、失敗時はsoundfileへフォールバックする。
+    Irodori-TTS本体のinference_runtime._load_audio(非公開シンボル)への依存を
+    避けるため、同等の最小実装をここに複製している。
+    """
+    try:
+        return torchaudio.load(str(path))
+    except RuntimeError:
+        import soundfile as sf
+
+        data, sr = sf.read(str(path), dtype="float32")
+        wav = torch.from_numpy(data)
+        return (wav.unsqueeze(0) if wav.ndim == 1 else wav.T), sr
+
+
 class _RuntimeState:
     """アプリ全体で共有する推論ランタイムの保持状態。"""
 
     def __init__(self) -> None:
         self.runtime: InferenceRuntime | None = None
-        self.ref_wav: str | None = None
+        self.ref_latent_path: str | None = None
 
     @property
     def ready(self) -> bool:
-        return self.runtime is not None
+        return self.runtime is not None and self.ref_latent_path is not None
 
 
 _state = _RuntimeState()
@@ -144,13 +160,52 @@ def _load_runtime_blocking(config: _ServerConfig) -> InferenceRuntime:
     return runtime
 
 
+def _precompute_ref_latent(runtime: InferenceRuntime, ref_wav: str) -> str:
+    """参照音声wavを起動時に1回だけエンコードし、結果のlatentを一時ファイルへ
+    保存してそのパスを返す。毎synthesize呼び出しで重複していたcodecエンコード
+    (CPU上のニューラルネット順伝播)を排除するためのキャッシュ。
+    """
+    defaults = SamplingRequest(text="")
+    wav, sr = _load_reference_wav(ref_wav)
+    if defaults.max_ref_seconds is not None and defaults.max_ref_seconds > 0:
+        max_ref_samples = max(1, int(float(defaults.max_ref_seconds) * float(sr)))
+        if wav.shape[1] > max_ref_samples:
+            wav = wav[:, :max_ref_samples]
+
+    ref_latent = runtime.codec.encode_waveform(
+        wav.unsqueeze(0),
+        sample_rate=int(sr),
+        normalize_db=defaults.ref_normalize_db,
+        ensure_max=bool(defaults.ref_ensure_max),
+    ).cpu()
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".pt", prefix="tts_ref_latent_")
+    os.close(fd)
+    torch.save(ref_latent, tmp_path)
+    print(f"[tts_server] cached reference latent -> {tmp_path}")
+    return tmp_path
+
+
+def _cleanup_state() -> None:
+    """ランタイム破棄と参照latent一時ファイルの削除を行う(冪等)。
+
+    Windowsではsubprocess.terminate()/kill()が同一実装(TerminateProcess)で
+    猶予なく即死させるため、lifespanのシャットダウンフックが実行される機会が
+    ない。そのためmain.py側が強制終了前に /shutdown 経由で明示的に呼び出す。
+    """
+    _state.runtime = None
+    if _state.ref_latent_path is not None:
+        Path(_state.ref_latent_path).unlink(missing_ok=True)
+        _state.ref_latent_path = None
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     config = _load_config()
-    _state.ref_wav = config.ref_wav
     _state.runtime = _load_runtime_blocking(config)
+    _state.ref_latent_path = _precompute_ref_latent(_state.runtime, config.ref_wav)
     yield
-    _state.runtime = None
+    _cleanup_state()
 
 
 app = FastAPI(lifespan=_lifespan)
@@ -167,6 +222,13 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/shutdown")
+def shutdown() -> dict[str, str]:
+    """強制終了(terminate/kill)前にクリーンアップを完了させるためのエンドポイント。"""
+    _cleanup_state()
+    return {"status": "ok"}
+
+
 @app.post("/synthesize")
 async def synthesize(body: SynthesizeRequestBody) -> Response:
     text = body.text.strip()
@@ -177,11 +239,13 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
 
     runtime = _state.runtime
     assert runtime is not None
-    ref_wav = _state.ref_wav
-    assert ref_wav is not None
+    ref_latent_path = _state.ref_latent_path
+    assert ref_latent_path is not None
 
     def _synthesize_blocking() -> bytes:
-        result = runtime.synthesize(SamplingRequest(text=text, ref_wav=ref_wav), log_fn=None)
+        result = runtime.synthesize(
+            SamplingRequest(text=text, ref_latent=ref_latent_path), log_fn=None
+        )
         # torchaudio(torchcodecバックエンド)がBytesIOへの直接保存に対応していない
         # ため、一時ファイル経由でWAVを書き出してからバイト列として読み込む。
         # save_wav()はtorchaudio失敗時にsoundfileへフォールバックする実装。
