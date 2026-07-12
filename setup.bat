@@ -84,10 +84,16 @@ rem ---- 2. Irodori-TTS側のvenv/依存関係の構築 ----
 echo.
 echo [2/6] Irodori-TTSの依存関係を構築しています (uv sync --extra %IRODORI_EXTRA%)...
 pushd "%IRODORI_DIR%"
+if errorlevel 1 goto PUSHD_IRODORI_FAILED
 
 uv sync --extra %IRODORI_EXTRA%
 if errorlevel 1 goto UV_SYNC_IRODORI_FAILED
 goto UV_SYNC_IRODORI_OK
+
+:PUSHD_IRODORI_FAILED
+echo [エラー] "%IRODORI_DIR%" ディレクトリへの移動に失敗しました。パスを確認してください。
+pause
+exit /b 1
 
 :UV_SYNC_IRODORI_FAILED
 echo [エラー] Irodori-TTSの "uv sync" に失敗しました。
@@ -96,12 +102,20 @@ pause
 exit /b 1
 
 :UV_SYNC_IRODORI_OK
+if not exist ".venv\Scripts\python.exe" goto VENV_NOT_FOUND
+
 rem ---- 3. TTSサイドカー用の追加パッケージインストール ----
 echo.
 echo [3/6] Irodori-TTSのvenvに fastapi / uvicorn を追加インストールしています...
 ".venv\Scripts\python.exe" -m pip install fastapi "uvicorn[standard]"
 if errorlevel 1 goto PIP_INSTALL_FAILED
 goto PIP_INSTALL_OK
+
+:VENV_NOT_FOUND
+echo [エラー] Irodori-TTSのvenv (.venv\Scripts\python.exe) が見つかりません。"uv sync" が正常に完了しているか確認してください。
+popd
+pause
+exit /b 1
 
 :PIP_INSTALL_FAILED
 echo [エラー] fastapi / uvicorn のインストールに失敗しました。
