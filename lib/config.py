@@ -33,6 +33,7 @@ class Settings:
     discord_admin_user_id: int
     discord_guild_id: int | None
     admin_check_interval_seconds: float
+    playback_timeout_seconds: float
 
     # Twitch
     twitch_client_id: str
@@ -134,6 +135,7 @@ def load_settings() -> Settings:
         ),
         discord_guild_id=_get_optional_int("DISCORD_GUILD_ID"),
         admin_check_interval_seconds=_get_float("ADMIN_CHECK_INTERVAL_SECONDS", 5.0),
+        playback_timeout_seconds=_get_float("PLAYBACK_TIMEOUT_SECONDS", 30.0),
         twitch_client_id=_get_required("TWITCH_CLIENT_ID"),
         twitch_oauth_token=_get_required("TWITCH_OAUTH_TOKEN"),
         twitch_bot_nick=_get_required("TWITCH_BOT_NICK"),

@@ -13,13 +13,12 @@ Twitchコメント(TTS合成済み音声)を、管理者が入室しているVC�
 from __future__ import annotations
 
 import asyncio
-import tempfile
-from pathlib import Path
+import io
 
 import discord
 from discord.ext import tasks
 
-from lib.bridge import LatestOnlyBridge
+from lib.bridge import CommentQueueBridge
 from lib.config import Settings
 from lib.tts_client import TtsClient
 
@@ -28,11 +27,16 @@ class DiscordVoiceBot:
     """管理者のVC入退室を追跡し、TwitchコメントのTTS音声を再生するBOT。"""
 
     def __init__(
-        self, settings: Settings, bridge: LatestOnlyBridge, tts_client: TtsClient
+        self, settings: Settings, bridge: CommentQueueBridge, tts_client: TtsClient
     ) -> None:
         self._settings = settings
         self._bridge = bridge
         self._tts_client = tts_client
+        # 合成済み音声データを合成ループから再生ループへ渡すキュー。
+        # maxsize=1により、現在再生中の1件が消費されるまで次の合成結果の
+        # putをブロックする(=先読みは常に1件分までに意図的に制限)。
+        # 破棄は行わない(フルならブロックするだけ)。
+        self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
 
         # 管理者を追いかけて接続している VoiceClient(未接続なら None)。
         # 複数ギルド同時対応は不要なので、単一の VoiceClient のみ保持する。
@@ -60,7 +64,8 @@ class DiscordVoiceBot:
         )(self._reconcile_loop_body)
         self._reconcile_loop.before_loop(self._before_reconcile_loop)
 
-        self._consume_task: asyncio.Task[None] | None = None
+        self._synthesize_task: asyncio.Task[None] | None = None
+        self._playback_task: asyncio.Task[None] | None = None
 
     async def run(self) -> None:
         """discord.pyクライアントを起動し、切断されるまでブロックする。"""
@@ -82,8 +87,10 @@ class DiscordVoiceBot:
         """discord.pyクライアントを安全にクローズする(VC切断含む)。"""
         if self._reconcile_loop.is_running():
             self._reconcile_loop.cancel()
-        if self._consume_task is not None:
-            self._consume_task.cancel()
+        if self._synthesize_task is not None:
+            self._synthesize_task.cancel()
+        if self._playback_task is not None:
+            self._playback_task.cancel()
 
         if self._voice_client is not None and self._voice_client.is_connected():
             await self._voice_client.disconnect()
@@ -100,8 +107,10 @@ class DiscordVoiceBot:
         # 二重起動を避けるため、既に走っていなければ開始する。
         if not self._reconcile_loop.is_running():
             self._reconcile_loop.start()
-        if self._consume_task is None:
-            self._consume_task = asyncio.create_task(self._consume_loop())
+        if self._synthesize_task is None:
+            self._synthesize_task = asyncio.create_task(self._synthesize_loop())
+        if self._playback_task is None:
+            self._playback_task = asyncio.create_task(self._playback_loop())
 
     async def on_voice_state_update(
         self,
@@ -175,8 +184,12 @@ class DiscordVoiceBot:
         except Exception as e:
             print(f"[discord_bot] 定期同期処理でエラーが発生しました: {e}")
 
-    async def _consume_loop(self) -> None:
-        """Twitchコメント(のTTS音声)を取り出し、順次VCで再生し続けるループ。"""
+    async def _synthesize_loop(self) -> None:
+        """Twitchコメントを取り出してTTS合成し、結果を再生キューへ渡し続けるループ。
+
+        再生ループとは別タスクとして動くため、現在再生中の音声がある間にも
+        次のコメントの合成をバックグラウンドで進められる(パイプライン化)。
+        """
         while True:
             text = await self._bridge.wait_and_take()
             print(f"[discord_bot] TTS合成を開始します: {text!r}")
@@ -185,7 +198,14 @@ class DiscordVoiceBot:
             except Exception as e:
                 print(f"[discord_bot] TTS合成に失敗しました: {e}")
                 continue
-            print(f"[discord_bot] TTS合成完了({len(wav_bytes)} bytes)。再生します。")
+            print(f"[discord_bot] TTS合成完了({len(wav_bytes)} bytes)。再生キューへ渡します。")
+            await self._audio_queue.put(wav_bytes)
+
+    async def _playback_loop(self) -> None:
+        """合成済み音声データを再生キューから取り出し、順次VCで再生し続けるループ。"""
+        while True:
+            wav_bytes = await self._audio_queue.get()
+            print("[discord_bot] 再生します。")
             try:
                 await self._play(wav_bytes)
             except Exception as e:
@@ -194,31 +214,53 @@ class DiscordVoiceBot:
             print("[discord_bot] 再生完了。")
 
     async def _play(self, wav_bytes: bytes) -> None:
-        """WAV音声データを、現在接続中のVCで再生する(再生完了まで待機する)。"""
-        if self._voice_client is None or not self._voice_client.is_connected():
+        """WAV音声データを、現在接続中のVCで再生する(再生完了まで待機する)。
+
+        ffmpegの偶発的なハング等で再生が詰まった場合に備え、
+        settings.playback_timeout_seconds を超えても再生完了が通知されなければ
+        強制的に復旧を試みて例外を送出する(呼び出し元の_playback_loopが
+        次のキュー項目に進めるようにするため)。
+        """
+        async with self._voice_lock:
+            voice_client = self._voice_client
+
+        if voice_client is None or not voice_client.is_connected():
             print("[discord_bot] VC未接続のため再生をスキップします。")
             return
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
-            tmp_file.write(wav_bytes)
-            tmp_path = Path(tmp_file.name)
+        if voice_client.is_playing():
+            voice_client.stop()
 
+        loop = asyncio.get_running_loop()
+        finished_event = asyncio.Event()
+
+        def _after_playback(error: Exception | None) -> None:
+            if error is not None:
+                print(f"[discord_bot] 再生中にエラーが発生しました: {error}")
+            loop.call_soon_threadsafe(finished_event.set)
+
+        # 一時ファイル経由をやめ、メモリ上のWAVバイト列を直接ffmpegへパイプする。
+        source = discord.FFmpegPCMAudio(
+            io.BytesIO(wav_bytes),
+            pipe=True,
+            executable=self._settings.ffmpeg_path or "ffmpeg",
+        )
+        voice_client.play(source, after=_after_playback)
+        timeout = self._settings.playback_timeout_seconds
+        print(f"[discord_bot] 再生を開始しました(タイムアウト{timeout}秒)。")
         try:
-            if self._voice_client.is_playing():
-                self._voice_client.stop()
-
-            loop = asyncio.get_running_loop()
-            finished_event = asyncio.Event()
-
-            def _after_playback(error: Exception | None) -> None:
-                if error is not None:
-                    print(f"[discord_bot] 再生中にエラーが発生しました: {error}")
-                loop.call_soon_threadsafe(finished_event.set)
-
-            source = discord.FFmpegPCMAudio(
-                str(tmp_path), executable=self._settings.ffmpeg_path or "ffmpeg"
+            await asyncio.wait_for(finished_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            print(
+                f"[discord_bot] {timeout}秒応答なしのためタイムアウトしました。"
+                "復旧を試みます。"
             )
-            self._voice_client.play(source, after=_after_playback)
-            await finished_event.wait()
-        finally:
-            tmp_path.unlink(missing_ok=True)
+            try:
+                source.cleanup()
+            except Exception as e:
+                print(f"[discord_bot] 再生ソースのクリーンアップに失敗しました: {e}")
+            try:
+                voice_client.stop()
+            except Exception as e:
+                print(f"[discord_bot] 再生停止に失敗しました: {e}")
+            raise

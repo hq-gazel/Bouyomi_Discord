@@ -72,6 +72,7 @@ uv run main.py
 | `DISCORD_ADMIN_USER_ID` | 必須 | 管理者として扱うDiscordユーザーID |
 | `DISCORD_GUILD_ID` | 任意 | Botを動作させる対象サーバー(ギルド)ID。未設定なら全ギルド対象 |
 | `ADMIN_CHECK_INTERVAL_SECONDS` | 任意 | 管理者状態のチェック間隔(秒)。デフォルト`5.0` |
+| `PLAYBACK_TIMEOUT_SECONDS` | 任意 | 1回の音声再生のタイムアウト秒数。デフォルト`30.0` |
 
 ### Twitch
 
