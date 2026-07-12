@@ -24,8 +24,6 @@ from lib.twitch_bot import TwitchChatBot
 
 _PROJECT_ROOT = Path(__file__).parent
 _TTS_SERVER_PATH = _PROJECT_ROOT / "tts_server.py"
-# TTSサーバーはモデルロードに数分かかりうるため、余裕を持ったタイムアウトにする。
-_TTS_HEALTHY_TIMEOUT_SECONDS = 180.0
 _TTS_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
@@ -44,6 +42,11 @@ def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
     env["IRODORI_TTS_REF_WAV"] = settings.irodori_tts_ref_wav
     env["TTS_SERVER_HOST"] = settings.tts_server_host
     env["TTS_SERVER_PORT"] = str(settings.tts_server_port)
+    env["IRODORI_TTS_MODEL_PRECISION"] = settings.irodori_tts_model_precision
+    env["IRODORI_TTS_CODEC_DEVICE"] = settings.irodori_tts_codec_device
+    env["IRODORI_TTS_COMPILE_MODEL"] = str(settings.irodori_tts_compile_model).lower()
+    env["IRODORI_TTS_COMPILE_DYNAMIC"] = str(settings.irodori_tts_compile_dynamic).lower()
+    env["TTS_DEBUG_LOGGING"] = str(settings.tts_debug_logging).lower()
 
     return subprocess.Popen(
         [settings.irodori_tts_venv_python, str(_TTS_SERVER_PATH)],
@@ -86,7 +89,7 @@ async def main() -> None:
     tts_client = TtsClient(host=settings.tts_server_host, port=settings.tts_server_port)
 
     try:
-        await tts_client.wait_until_healthy(timeout=_TTS_HEALTHY_TIMEOUT_SECONDS)
+        await tts_client.wait_until_healthy(timeout=settings.tts_startup_timeout_seconds)
     except TimeoutError as e:
         print(f"TTSサーバー起動エラー: {e}", file=sys.stderr)
         await _stop_tts_server_process(tts_process, tts_client)

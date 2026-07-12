@@ -47,10 +47,16 @@ class Settings:
     irodori_tts_hf_checkpoint: str | None
     irodori_tts_checkpoint: str | None
     irodori_tts_ref_wav: str
+    irodori_tts_model_precision: str
+    irodori_tts_codec_device: str
+    irodori_tts_compile_model: bool
+    irodori_tts_compile_dynamic: bool
 
     # TTSサイドカーサーバー
     tts_server_host: str
     tts_server_port: int
+    tts_debug_logging: bool
+    tts_startup_timeout_seconds: float
 
     # 任意
     ffmpeg_path: str | None
@@ -106,6 +112,21 @@ def _get_float(name: str, default: float) -> float:
         ) from e
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    """環境変数を真偽値として取得する。未設定(空文字)なら default を返す。"""
+    value = _raw(name).lower()
+    if not value:
+        return default
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(
+        f"環境変数 '{name}' の値 '{value}' を真偽値に変換できません"
+        "('true'/'false' 等を指定してください)。"
+    )
+
+
 def load_settings() -> Settings:
     """.env を読み込み、Settings インスタンスを構築する。
 
@@ -145,9 +166,15 @@ def load_settings() -> Settings:
         irodori_tts_hf_checkpoint=hf_checkpoint,
         irodori_tts_checkpoint=local_checkpoint,
         irodori_tts_ref_wav=_get_required("IRODORI_TTS_REF_WAV"),
+        irodori_tts_model_precision=_raw("IRODORI_TTS_MODEL_PRECISION") or "auto",
+        irodori_tts_codec_device=_raw("IRODORI_TTS_CODEC_DEVICE") or "auto",
+        irodori_tts_compile_model=_get_bool("IRODORI_TTS_COMPILE_MODEL", True),
+        irodori_tts_compile_dynamic=_get_bool("IRODORI_TTS_COMPILE_DYNAMIC", True),
         tts_server_host=_raw("TTS_SERVER_HOST") or "127.0.0.1",
         tts_server_port=_parse_int(
             "TTS_SERVER_PORT", _raw("TTS_SERVER_PORT") or "8765"
         ),
+        tts_debug_logging=_get_bool("TTS_DEBUG_LOGGING", False),
+        tts_startup_timeout_seconds=_get_float("TTS_STARTUP_TIMEOUT_SECONDS", 600.0),
         ffmpeg_path=_get_optional("FFMPEG_PATH"),
     )

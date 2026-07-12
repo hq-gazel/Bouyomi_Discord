@@ -14,6 +14,11 @@ main.py側がsubprocess起動時に以下の環境変数をセットして渡す
     IRODORI_TTS_REF_WAV
     TTS_SERVER_HOST (デフォルト "127.0.0.1")
     TTS_SERVER_PORT (デフォルト "8765")
+    IRODORI_TTS_MODEL_PRECISION (任意、デフォルト "auto")
+    IRODORI_TTS_CODEC_DEVICE (任意、デフォルト "auto")
+    IRODORI_TTS_COMPILE_MODEL (任意、デフォルト "true")
+    IRODORI_TTS_COMPILE_DYNAMIC (任意、デフォルト "true")
+    TTS_DEBUG_LOGGING (任意、デフォルト "false")
 
 起動: `<Irodori-TTSのvenv>\\Scripts\\python.exe tts_server.py`
 """
@@ -49,6 +54,21 @@ from irodori_tts.inference_runtime import (  # noqa: E402
 )
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """環境変数を真偽値として読み込む。未設定(空文字)なら default を返す。"""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    raise RuntimeError(
+        f"環境変数 '{name}' の値 '{raw}' を真偽値に変換できません"
+        "('true'/'false' 等を指定してください)。"
+    )
+
+
 @dataclass(frozen=True)
 class _ServerConfig:
     """環境変数から読み込んだサーバー設定。"""
@@ -59,6 +79,11 @@ class _ServerConfig:
     ref_wav: str
     host: str
     port: int
+    model_precision: str
+    codec_device: str
+    compile_model: bool
+    compile_dynamic: bool
+    debug_logging: bool
 
 
 def _load_config() -> _ServerConfig:
@@ -88,6 +113,12 @@ def _load_config() -> _ServerConfig:
             f"環境変数 'TTS_SERVER_PORT' の値 '{port_raw}' を整数に変換できません。"
         ) from e
 
+    model_precision = os.environ.get("IRODORI_TTS_MODEL_PRECISION", "").strip() or "auto"
+    codec_device = os.environ.get("IRODORI_TTS_CODEC_DEVICE", "").strip() or "auto"
+    compile_model = _env_bool("IRODORI_TTS_COMPILE_MODEL", True)
+    compile_dynamic = _env_bool("IRODORI_TTS_COMPILE_DYNAMIC", True)
+    debug_logging = _env_bool("TTS_DEBUG_LOGGING", False)
+
     return _ServerConfig(
         irodori_tts_dir=irodori_tts_dir,
         hf_checkpoint=hf_checkpoint,
@@ -95,6 +126,11 @@ def _load_config() -> _ServerConfig:
         ref_wav=ref_wav,
         host=host,
         port=port,
+        model_precision=model_precision,
+        codec_device=codec_device,
+        compile_model=compile_model,
+        compile_dynamic=compile_dynamic,
+        debug_logging=debug_logging,
     )
 
 
@@ -115,6 +151,20 @@ def _resolve_checkpoint_path(config: _ServerConfig) -> str:
 
 
 def _detect_model_device() -> str:
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _resolve_model_precision(raw: str, model_device: str) -> str:
+    """'auto' なら CUDA検出時 'bf16'、それ以外(CPU等)は 'fp32' に解決する。"""
+    if raw.strip().lower() != "auto":
+        return raw
+    return "bf16" if model_device == "cuda" else "fp32"
+
+
+def _resolve_codec_device(raw: str) -> str:
+    """'auto' なら CUDA使用可否で 'cuda' / 'cpu' に解決する。"""
+    if raw.strip().lower() != "auto":
+        return raw
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -139,6 +189,8 @@ class _RuntimeState:
     def __init__(self) -> None:
         self.runtime: InferenceRuntime | None = None
         self.ref_latent_path: str | None = None
+        # TTS_DEBUG_LOGGING設定値。/synthesizeでlog_fnを渡すかどうかに使う。
+        self.debug_logging: bool = False
 
     @property
     def ready(self) -> bool:
@@ -147,17 +199,50 @@ class _RuntimeState:
 
 _state = _RuntimeState()
 
+# torch.compileウォームアップ時に使うダミーテキスト。
+_WARMUP_TEXT = "こんにちは、これはウォームアップ用のテストメッセージです。"
+
 
 def _load_runtime_blocking(config: _ServerConfig) -> InferenceRuntime:
     """モデルロード(ブロッキング処理)。startup時に1回だけ呼ばれる想定。"""
     checkpoint_path = _resolve_checkpoint_path(config)
     model_device = _detect_model_device()
-    print(f"[tts_server] loading checkpoint={checkpoint_path} model_device={model_device}")
+    model_precision = _resolve_model_precision(config.model_precision, model_device)
+    codec_device = _resolve_codec_device(config.codec_device)
+    print(
+        f"[tts_server] loading checkpoint={checkpoint_path} model_device={model_device} "
+        f"model_precision={model_precision} codec_device={codec_device} "
+        f"compile_model={config.compile_model} compile_dynamic={config.compile_dynamic}"
+    )
     runtime = InferenceRuntime.from_key(
-        RuntimeKey(checkpoint=checkpoint_path, model_device=model_device)
+        RuntimeKey(
+            checkpoint=checkpoint_path,
+            model_device=model_device,
+            model_precision=model_precision,
+            codec_device=codec_device,
+            compile_model=config.compile_model,
+            compile_dynamic=config.compile_dynamic,
+        )
     )
     print("[tts_server] model load complete")
     return runtime
+
+
+def _warmup_runtime(runtime: InferenceRuntime, ref_latent_path: str, *, debug_logging: bool) -> None:
+    """torch.compileの初回コンパイルコストを起動時に前倒しするためのウォームアップ。
+
+    /health が200を返す(_state.readyになる)前に実行することで、実際の初回
+    コメント読み上げ時にコンパイル待ちが発生しないようにする。
+    失敗時は例外をそのまま伝播させ、起動を失敗させる(設定不備は起動時に
+    落とす既存方針を踏襲。不安定な場合はIRODORI_TTS_COMPILE_MODEL=falseで
+    ウォームアップ自体を無効化できる)。
+    """
+    print("[tts_server] compileウォームアップを開始します(初回のみ時間がかかります)...")
+    log_fn = print if debug_logging else None
+    runtime.synthesize(
+        SamplingRequest(text=_WARMUP_TEXT, ref_latent=ref_latent_path), log_fn=log_fn
+    )
+    print("[tts_server] compileウォームアップが完了しました。")
 
 
 def _precompute_ref_latent(runtime: InferenceRuntime, ref_wav: str) -> str:
@@ -202,8 +287,15 @@ def _cleanup_state() -> None:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     config = _load_config()
+    _state.debug_logging = config.debug_logging
     _state.runtime = _load_runtime_blocking(config)
     _state.ref_latent_path = _precompute_ref_latent(_state.runtime, config.ref_wav)
+    if config.compile_model:
+        # ウォームアップは_state.ready(=/healthが200を返す)になる前、
+        # つまりここで完了させる。失敗時は例外がそのまま伝播し起動が失敗する。
+        _warmup_runtime(
+            _state.runtime, _state.ref_latent_path, debug_logging=config.debug_logging
+        )
     yield
     _cleanup_state()
 
@@ -243,8 +335,9 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
     assert ref_latent_path is not None
 
     def _synthesize_blocking() -> bytes:
+        log_fn = print if _state.debug_logging else None
         result = runtime.synthesize(
-            SamplingRequest(text=text, ref_latent=ref_latent_path), log_fn=None
+            SamplingRequest(text=text, ref_latent=ref_latent_path), log_fn=log_fn
         )
         # torchaudio(torchcodecバックエンド)がBytesIOへの直接保存に対応していない
         # ため、一時ファイル経由でWAVを書き出してからバイト列として読み込む。

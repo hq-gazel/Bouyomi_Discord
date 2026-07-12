@@ -56,7 +56,7 @@ Twitchの仕様は変わりやすいので、詳細は都度公式ドキュメ�
 uv run main.py
 ```
 
-起動すると、まずIrodori-TTSサイドカーサーバー(`tts_server.py`)を `IRODORI_TTS_VENV_PYTHON` で指定したインタプリタでsubprocessとして自動起動し、モデルロードが完了して `/health` が応答可能になるまで待機する(最大180秒)。その後Discord BOTとTwitch BOTが並行して起動する。
+起動すると、まずIrodori-TTSサイドカーサーバー(`tts_server.py`)を `IRODORI_TTS_VENV_PYTHON` で指定したインタプリタでsubprocessとして自動起動し、モデルロードとtorch.compileウォームアップが完了して `/health` が応答可能になるまで待機する(デフォルト最大600秒、`TTS_STARTUP_TIMEOUT_SECONDS`で変更可)。その後Discord BOTとTwitch BOTが並行して起動する。
 
 終了時(Ctrl+C等)は、Discord/Twitch BOTの切断とTTSサイドカーサーバーの終了を行ってから終了する。
 
@@ -92,6 +92,10 @@ uv run main.py
 | `IRODORI_TTS_HF_CHECKPOINT` | 二者択一 | HuggingFace上のチェックポイントID |
 | `IRODORI_TTS_CHECKPOINT` | 二者択一 | ローカルに配置したチェックポイントのパス |
 | `IRODORI_TTS_REF_WAV` | 必須 | 固定話者として使用する参照音声wavファイルのパス |
+| `IRODORI_TTS_MODEL_PRECISION` | 任意 | モデルの推論精度。デフォルト`auto`(CUDA検出時`bf16`、CPU時`fp32`) |
+| `IRODORI_TTS_CODEC_DEVICE` | 任意 | 参照音声エンコード(コーデック)の実行デバイス。デフォルト`auto`(CUDA使用可なら`cuda`、それ以外`cpu`) |
+| `IRODORI_TTS_COMPILE_MODEL` | 任意 | torch.compileによるモデル事前コンパイルを有効にするか。デフォルト`true`。起動時にウォームアップ合成を1回実行する |
+| `IRODORI_TTS_COMPILE_DYNAMIC` | 任意 | torch.compileの動的shape対応を有効にするか。デフォルト`true` |
 
 `IRODORI_TTS_HF_CHECKPOINT` と `IRODORI_TTS_CHECKPOINT` はどちらか一方の設定が必須(両方未設定はエラー)。
 
@@ -101,6 +105,8 @@ uv run main.py
 | --- | --- | --- |
 | `TTS_SERVER_HOST` | 任意 | TTSサーバーのバインドホスト。デフォルト`127.0.0.1` |
 | `TTS_SERVER_PORT` | 任意 | TTSサーバーのバインドポート。デフォルト`8765` |
+| `TTS_STARTUP_TIMEOUT_SECONDS` | 任意 | TTSサーバーが起動完了(healthy)になるまでのタイムアウト秒数。デフォルト`600.0` |
+| `TTS_DEBUG_LOGGING` | 任意 | TTS合成のステージ別タイミングログを標準出力に出すか。デフォルト`false` |
 
 ### 任意設定
 
