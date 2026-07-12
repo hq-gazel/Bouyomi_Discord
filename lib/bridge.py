@@ -1,12 +1,11 @@
 """Twitchコメント受信とTTS再生の間を橋渡しするモジュール。
 
-Twitchチャットは高頻度でコメントが流れることがあるため、単純なFIFOキューで
-全コメントを溜め込むと、読み上げ(TTS合成+Discord再生)が詰まっている間に
-未処理コメントがどんどん積み上がり、配信からどんどん遅延した内容を延々と
-読み上げ続けることになってしまう。
+読み上げは「絶対にコメントを取りこぼさない」ことが要件のため、受信した
+コメントは古いものから順に破棄せず全件キューイングし、到着順(FIFO)に
+1件ずつ取り出せる `CommentQueueBridge` を提供する。
 
-これを避けるため、保留中のコメントは常に最新の1件だけを保持し、古い未処理
-コメントは破棄する `LatestOnlyBridge` を提供する。
+キューは無制限(上限なし)。合成・再生が詰まってコメントが積み上がっても
+破棄は行わない(体感速度は別途、合成/再生のパイプライン化等で対応する)。
 """
 
 from __future__ import annotations
@@ -14,45 +13,32 @@ from __future__ import annotations
 import asyncio
 
 
-class LatestOnlyBridge:
-    """保留スロットに常に最新1件のテキストだけを保持するブリッジ。
+class CommentQueueBridge:
+    """受信したテキストを到着順に全件保持するFIFOキューのブリッジ。
 
-    Producer側(Twitch BOT)は submit() で新しいコメントを積む。
-    Consumer側(Discord BOT)は wait_and_take() で「次に読み上げるべき最新の
-    コメント」を1件取り出す(取り出すまでブロックする)。
+    Producer側(Twitch BOT)は submit() で新しいコメントをキューへ積む。
+    Consumer側(Discord BOT)は wait_and_take() でキューの先頭にある
+    テキストを1件取り出す(キューが空の間はブロックする)。
 
-    consumer は単一(wait_and_take() を同時に複数箇所から呼ばない)前提の
-    シンプルな実装。
+    内部は asyncio.Queue(無制限)そのもので、複数producer/単一consumerの
+    どちらも安全に扱える。
     """
 
     def __init__(self) -> None:
-        self._pending_text: str | None = None
-        self._event = asyncio.Event()
+        self._queue: asyncio.Queue[str] = asyncio.Queue()
 
     def submit(self, text: str) -> None:
-        """新しいテキストを保留スロットにセットする(同期メソッド、awaitしない)。
+        """新しいテキストをキューの末尾に積む(同期メソッド、awaitしない)。
 
-        既に未取得のテキストが保留中であれば、それを上書き(破棄)して
-        新しいテキストに置き換える。asyncioのイベントループが動いている
-        コンテキストから呼ばれる想定。
-
-        単一変数への代入と Event.set() のみなので、asyncio のシングル
-        スレッドイベントループ上では await を挟まない限り他のコルーチンに
-        制御が渡らず、ロックは不要。
+        asyncio.Queue.put_nowait() は上限なしキューに対しては即座に成功する
+        (QueueFullが発生しない)ため、awaitを挟まずに呼び出せる。
         """
-        self._pending_text = text
-        self._event.set()
+        self._queue.put_nowait(text)
 
     async def wait_and_take(self) -> str:
-        """保留中のテキストが現れるまで非同期に待機し、取り出して返す。
+        """キューの先頭にあるテキストが現れるまで非同期に待機し、取り出して返す。
 
-        取り出した後は保留スロットをクリアするため、呼び出し中に複数回
-        submit() されても、実際に take される時点で保留されている最新の
-        1件だけが返る。
+        到着順(FIFO)に1件ずつ取り出されるため、待機中に複数回 submit()
+        されても、それらは破棄されずすべて後続の呼び出しで順番に返る。
         """
-        await self._event.wait()
-        text = self._pending_text
-        assert text is not None
-        self._pending_text = None
-        self._event.clear()
-        return text
+        return await self._queue.get()

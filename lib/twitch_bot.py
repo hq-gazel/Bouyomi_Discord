@@ -1,7 +1,7 @@
 """Twitchチャット受信BOT。
 
 TwitchIO(2.x系, ext.commands.Bot)でTwitchチャンネルのチャットに接続し、
-受信した全メッセージ(BOT自身の発言を除く)を LatestOnlyBridge 経由で
+受信した全メッセージ(BOT自身の発言を除く)を CommentQueueBridge 経由で
 Discord側(TTS再生ループ)に橋渡しする。
 
 TwitchIO 2.10.0(このプロジェクトにインストール済みのバージョン)を実機確認した
@@ -18,7 +18,7 @@ from __future__ import annotations
 from twitchio import Message
 from twitchio.ext import commands
 
-from lib.bridge import LatestOnlyBridge
+from lib.bridge import CommentQueueBridge
 from lib.config import Settings
 
 # TwitchIOのcommands.Botはprefix引数を必須とするが、コマンド機能自体は
@@ -30,7 +30,7 @@ class _ChatRelayBot(commands.Bot):
     """全チャットメッセージをbridgeへ転送するTwitchIO Bot本体。"""
 
     def __init__(
-        self, *, token: str, initial_channels: list[str], bridge: LatestOnlyBridge
+        self, *, token: str, initial_channels: list[str], bridge: CommentQueueBridge
     ) -> None:
         super().__init__(
             token=token,
@@ -59,7 +59,7 @@ class _ChatRelayBot(commands.Bot):
 class TwitchChatBot:
     """Twitchチャンネルのチャットを受信し、bridgeに流し込むBOT。"""
 
-    def __init__(self, settings: Settings, bridge: LatestOnlyBridge) -> None:
+    def __init__(self, settings: Settings, bridge: CommentQueueBridge) -> None:
         self._settings = settings
         self._bridge = bridge
         # TwitchIOのClient.__init__はasyncio.get_event_loop()でその場の

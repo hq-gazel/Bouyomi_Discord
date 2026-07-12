@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from lib.bridge import LatestOnlyBridge
+from lib.bridge import CommentQueueBridge
 from lib.config import Settings, load_settings
 from lib.discord_bot import DiscordVoiceBot
 from lib.tts_client import TtsClient
@@ -94,7 +94,7 @@ async def main() -> None:
 
     print("[main] Irodori-TTSサイドカーサーバーの起動を確認しました。")
 
-    bridge = LatestOnlyBridge()
+    bridge = CommentQueueBridge()
     discord_bot = DiscordVoiceBot(settings, bridge, tts_client)
     twitch_bot = TwitchChatBot(settings, bridge)
 
