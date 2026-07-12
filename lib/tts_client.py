@@ -17,10 +17,15 @@ _HEALTH_CHECK_TIMEOUT_SECONDS = 5.0
 
 
 class TtsClient:
-    """TTSサイドカーサーバーへのHTTPクライアント。"""
+    """TTSサイドカーサーバーへのHTTPクライアント。
+
+    httpx.AsyncClient(≒コネクション)は呼び出しごとに作り直さず、
+    インスタンス生成時に1つだけ保持して使い回す(接続確立コストの削減)。
+    """
 
     def __init__(self, host: str, port: int) -> None:
         self._base_url = f"http://{host}:{port}"
+        self._client = httpx.AsyncClient(timeout=_SYNTHESIZE_TIMEOUT_SECONDS)
 
     async def synthesize(self, text: str) -> bytes:
         """POST /synthesize を呼び出し、WAVバイト列を返す。
@@ -29,10 +34,9 @@ class TtsClient:
         送出する。
         """
         try:
-            async with httpx.AsyncClient(timeout=_SYNTHESIZE_TIMEOUT_SECONDS) as client:
-                response = await client.post(
-                    f"{self._base_url}/synthesize", json={"text": text}
-                )
+            response = await self._client.post(
+                f"{self._base_url}/synthesize", json={"text": text}
+            )
         except httpx.TimeoutException as e:
             raise RuntimeError(
                 f"TTSサーバーへのsynthesizeリクエストがタイムアウトしました: {self._base_url}"
@@ -55,12 +59,16 @@ class TtsClient:
         WindowsではPopen.terminate()/kill()が猶予なく即死させるため、強制終了
         前にこれを呼んでlifespanのシャットダウンフック相当の処理を実行させる。
         サーバーが既に停止/未起動の場合の接続エラーは無視して安全に呼べる。
+        呼び出し後、保持していたhttpx.AsyncClientをクローズする。
         """
         try:
-            async with httpx.AsyncClient(timeout=_HEALTH_CHECK_TIMEOUT_SECONDS) as client:
-                await client.post(f"{self._base_url}/shutdown")
+            await self._client.post(
+                f"{self._base_url}/shutdown", timeout=_HEALTH_CHECK_TIMEOUT_SECONDS
+            )
         except httpx.RequestError:
             pass
+        finally:
+            await self._client.aclose()
 
     async def wait_until_healthy(self, timeout: float = 120.0, interval: float = 1.0) -> None:
         """GET /health を timeout秒に達するまで interval秒間隔でポーリングする。
@@ -71,19 +79,20 @@ class TtsClient:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        async with httpx.AsyncClient(timeout=_HEALTH_CHECK_TIMEOUT_SECONDS) as client:
-            while True:
-                try:
-                    response = await client.get(f"{self._base_url}/health")
-                    if response.status_code == 200:
-                        return
-                except httpx.RequestError:
-                    # サーバー起動途中の接続拒否等は許容してリトライを続ける。
-                    pass
+        while True:
+            try:
+                response = await self._client.get(
+                    f"{self._base_url}/health", timeout=_HEALTH_CHECK_TIMEOUT_SECONDS
+                )
+                if response.status_code == 200:
+                    return
+            except httpx.RequestError:
+                # サーバー起動途中の接続拒否等は許容してリトライを続ける。
+                pass
 
-                if loop.time() >= deadline:
-                    raise TimeoutError(
-                        f"TTSサーバーが{timeout}秒以内にhealthyになりませんでした: "
-                        f"{self._base_url}"
-                    )
-                await asyncio.sleep(interval)
+            if loop.time() >= deadline:
+                raise TimeoutError(
+                    f"TTSサーバーが{timeout}秒以内にhealthyになりませんでした: "
+                    f"{self._base_url}"
+                )
+            await asyncio.sleep(interval)
