@@ -42,11 +42,10 @@ _IRODORI_TTS_DIR = os.environ.get("IRODORI_TTS_DIR", "").strip()
 if _IRODORI_TTS_DIR and _IRODORI_TTS_DIR not in sys.path:
     sys.path.insert(0, _IRODORI_TTS_DIR)
 
-import torch  # noqa: E402
-import torchaudio  # noqa: E402
-from huggingface_hub import hf_hub_download  # noqa: E402
-
-from irodori_tts.inference_runtime import (  # noqa: E402
+import torch
+import torchaudio
+from huggingface_hub import hf_hub_download
+from irodori_tts.inference_runtime import (
     InferenceRuntime,
     RuntimeKey,
     SamplingRequest,
@@ -348,7 +347,14 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
             return tmp_path.read_bytes()
 
     loop = asyncio.get_running_loop()
-    wav_bytes = await loop.run_in_executor(None, _synthesize_blocking)
+    try:
+        wav_bytes = await loop.run_in_executor(None, _synthesize_blocking)
+    except Exception as e:
+        print(f"[tts_server] synthesize failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "synthesis_failed", "message": str(e)},
+        ) from e
     return Response(content=wav_bytes, media_type="audio/wav")
 
 
