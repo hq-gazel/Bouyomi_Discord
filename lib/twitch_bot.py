@@ -20,6 +20,7 @@ from twitchio.ext import commands
 
 from lib.bridge import CommentQueueBridge
 from lib.config import Settings
+from lib.ng_word_filter import mask_ng_words
 
 # TwitchIOのcommands.Botはprefix引数を必須とするが、コマンド機能自体は
 # 使わないため、ライブラリの要求を満たすためだけの固定値として扱う。
@@ -53,6 +54,7 @@ class _ChatRelayBot(commands.Bot):
         bridge: CommentQueueBridge,
         template: str,
         user_aliases: dict[str, str],
+        ng_words: list[str],
     ) -> None:
         super().__init__(
             token=token,
@@ -62,6 +64,7 @@ class _ChatRelayBot(commands.Bot):
         self._bridge = bridge
         self._template = template
         self._user_aliases = user_aliases
+        self._ng_words = ng_words
 
     async def event_ready(self) -> None:
         """IRC認証・チャンネルJOINが完了した時点で呼ばれる。"""
@@ -82,13 +85,15 @@ class _ChatRelayBot(commands.Bot):
             username = _resolve_display_name(
                 self._user_aliases, author.name, author.display_name
             )
-            text = _build_comment_text(self._template, username, message.content)
+            comment = mask_ng_words(message.content, self._ng_words)
+            text = _build_comment_text(self._template, username, comment)
             print(f"[twitch_bot] コメント受信: {text!r}")
             self._bridge.submit(text)
             return
 
-        print(f"[twitch_bot] コメント受信(発言者不明): {message.content!r}")
-        self._bridge.submit(message.content)
+        comment = mask_ng_words(message.content, self._ng_words)
+        print(f"[twitch_bot] コメント受信(発言者不明): {comment!r}")
+        self._bridge.submit(comment)
 
 
 class TwitchChatBot:
@@ -99,10 +104,12 @@ class TwitchChatBot:
         settings: Settings,
         bridge: CommentQueueBridge,
         user_aliases: dict[str, str],
+        ng_words: list[str],
     ) -> None:
         self._settings = settings
         self._bridge = bridge
         self._user_aliases = user_aliases
+        self._ng_words = ng_words
         # TwitchIOのClient.__init__はasyncio.get_event_loop()でその場の
         # イベントループを捕捉してしまうため、実行中のイベントループ上で
         # 呼ばれることが保証されている run() の中で初めて生成する。
@@ -116,6 +123,7 @@ class TwitchChatBot:
             bridge=self._bridge,
             template=self._settings.twitch_comment_template,
             user_aliases=self._user_aliases,
+            ng_words=self._ng_words,
         )
         await self._client.start()
 
