@@ -36,6 +36,14 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
+# lib.env_utilsはstdlibのみに依存するため、Irodori-TTS用の重い依存関係を
+# 持つこの別venvからでも import 可能(本ファイルはプロジェクトルート直下に
+# あるため、スクリプトのあるディレクトリがsys.path[0]となりlibを解決できる)。
+from lib.env_utils import get_bool as _env_bool
+from lib.env_utils import get_optional as _get_optional
+from lib.env_utils import get_raw as _env_raw
+from lib.env_utils import parse_int as _parse_int
+
 # irodori_tts パッケージがIrodori-TTSの.venvにインストール済みであれば
 # 本来sys.path操作は不要だが、念のためIRODORI_TTS_DIRをsys.pathに追加しておく。
 _IRODORI_TTS_DIR = os.environ.get("IRODORI_TTS_DIR", "").strip()
@@ -51,21 +59,6 @@ from irodori_tts.inference_runtime import (
     SamplingRequest,
     save_wav,
 )
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    """環境変数を真偽値として読み込む。未設定(空文字)なら default を返す。"""
-    raw = os.environ.get(name, "").strip().lower()
-    if not raw:
-        return default
-    if raw in ("1", "true", "yes", "on"):
-        return True
-    if raw in ("0", "false", "no", "off"):
-        return False
-    raise RuntimeError(
-        f"環境変数 '{name}' の値 '{raw}' を真偽値に変換できません"
-        "('true'/'false' 等を指定してください)。"
-    )
 
 
 @dataclass(frozen=True)
@@ -87,33 +80,28 @@ class _ServerConfig:
 
 def _load_config() -> _ServerConfig:
     """環境変数からサーバー設定を読み込む。不足・矛盾があればRuntimeErrorを送出。"""
-    irodori_tts_dir = os.environ.get("IRODORI_TTS_DIR", "").strip()
+    irodori_tts_dir = _env_raw("IRODORI_TTS_DIR")
     if not irodori_tts_dir:
         raise RuntimeError("環境変数 'IRODORI_TTS_DIR' が未設定です。")
 
-    hf_checkpoint = os.environ.get("IRODORI_TTS_HF_CHECKPOINT", "").strip() or None
-    local_checkpoint = os.environ.get("IRODORI_TTS_CHECKPOINT", "").strip() or None
+    hf_checkpoint = _get_optional("IRODORI_TTS_HF_CHECKPOINT")
+    local_checkpoint = _get_optional("IRODORI_TTS_CHECKPOINT")
     if hf_checkpoint is None and local_checkpoint is None:
         raise RuntimeError(
             "'IRODORI_TTS_HF_CHECKPOINT' か 'IRODORI_TTS_CHECKPOINT' のいずれか"
             "一方を環境変数に設定してください(両方とも未設定です)。"
         )
 
-    ref_wav = os.environ.get("IRODORI_TTS_REF_WAV", "").strip()
+    ref_wav = _env_raw("IRODORI_TTS_REF_WAV")
     if not ref_wav:
         raise RuntimeError("環境変数 'IRODORI_TTS_REF_WAV' が未設定です。")
 
-    host = os.environ.get("TTS_SERVER_HOST", "").strip() or "127.0.0.1"
-    port_raw = os.environ.get("TTS_SERVER_PORT", "").strip() or "8765"
-    try:
-        port = int(port_raw)
-    except ValueError as e:
-        raise RuntimeError(
-            f"環境変数 'TTS_SERVER_PORT' の値 '{port_raw}' を整数に変換できません。"
-        ) from e
+    host = _env_raw("TTS_SERVER_HOST") or "127.0.0.1"
+    port_raw = _env_raw("TTS_SERVER_PORT") or "8765"
+    port = _parse_int("TTS_SERVER_PORT", port_raw)
 
-    model_precision = os.environ.get("IRODORI_TTS_MODEL_PRECISION", "").strip() or "auto"
-    codec_device = os.environ.get("IRODORI_TTS_CODEC_DEVICE", "").strip() or "auto"
+    model_precision = _env_raw("IRODORI_TTS_MODEL_PRECISION") or "auto"
+    codec_device = _env_raw("IRODORI_TTS_CODEC_DEVICE") or "auto"
     compile_model = _env_bool("IRODORI_TTS_COMPILE_MODEL", True)
     compile_dynamic = _env_bool("IRODORI_TTS_COMPILE_DYNAMIC", True)
     debug_logging = _env_bool("TTS_DEBUG_LOGGING", False)
