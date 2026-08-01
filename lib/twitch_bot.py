@@ -15,7 +15,7 @@ twitch_bot_nick はこのBOTの接続処理では使用しない。
 
 from __future__ import annotations
 
-from twitchio import Message
+from twitchio import Chatter, Message
 from twitchio.ext import commands
 
 from lib.bridge import CommentQueueBridge
@@ -26,11 +26,33 @@ from lib.config import Settings
 _UNUSED_COMMAND_PREFIX = "!"
 
 
+def _resolve_display_name(
+    user_aliases: dict[str, str], login: str, fallback_display_name: str
+) -> str:
+    """発言者の読み上げ名を解決する。
+
+    `login`(小文字ログイン名)がエイリアス辞書に登録されていればそれを、
+    未設定なら `fallback_display_name`(Twitchの表示名)を返す。
+    """
+    return user_aliases.get(login.lower(), fallback_display_name)
+
+
+def _build_comment_text(template: str, username: str, comment: str) -> str:
+    """テンプレート文字列にユーザー名・コメントを埋め込んで読み上げテキストを組み立てる。"""
+    return template.format(username=username, comment=comment)
+
+
 class _ChatRelayBot(commands.Bot):
     """全チャットメッセージをbridgeへ転送するTwitchIO Bot本体。"""
 
     def __init__(
-        self, *, token: str, initial_channels: list[str], bridge: CommentQueueBridge
+        self,
+        *,
+        token: str,
+        initial_channels: list[str],
+        bridge: CommentQueueBridge,
+        template: str,
+        user_aliases: dict[str, str],
     ) -> None:
         super().__init__(
             token=token,
@@ -38,6 +60,8 @@ class _ChatRelayBot(commands.Bot):
             initial_channels=initial_channels,
         )
         self._bridge = bridge
+        self._template = template
+        self._user_aliases = user_aliases
 
     async def event_ready(self) -> None:
         """IRC認証・チャンネルJOINが完了した時点で呼ばれる。"""
@@ -52,16 +76,33 @@ class _ChatRelayBot(commands.Bot):
             return
         if not message.content:
             return
-        print(f"[twitch_bot] コメント受信: {message.content!r}")
+
+        author = message.author
+        if isinstance(author, Chatter) and author.name and author.display_name:
+            username = _resolve_display_name(
+                self._user_aliases, author.name, author.display_name
+            )
+            text = _build_comment_text(self._template, username, message.content)
+            print(f"[twitch_bot] コメント受信: {text!r}")
+            self._bridge.submit(text)
+            return
+
+        print(f"[twitch_bot] コメント受信(発言者不明): {message.content!r}")
         self._bridge.submit(message.content)
 
 
 class TwitchChatBot:
     """Twitchチャンネルのチャットを受信し、bridgeに流し込むBOT。"""
 
-    def __init__(self, settings: Settings, bridge: CommentQueueBridge) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        bridge: CommentQueueBridge,
+        user_aliases: dict[str, str],
+    ) -> None:
         self._settings = settings
         self._bridge = bridge
+        self._user_aliases = user_aliases
         # TwitchIOのClient.__init__はasyncio.get_event_loop()でその場の
         # イベントループを捕捉してしまうため、実行中のイベントループ上で
         # 呼ばれることが保証されている run() の中で初めて生成する。
@@ -73,6 +114,8 @@ class TwitchChatBot:
             token=self._settings.twitch_oauth_token,
             initial_channels=[self._settings.twitch_channel],
             bridge=self._bridge,
+            template=self._settings.twitch_comment_template,
+            user_aliases=self._user_aliases,
         )
         await self._client.start()
 

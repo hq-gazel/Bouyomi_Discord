@@ -12,6 +12,9 @@ wheels/
 # Env / secrets
 .env
 
+# 個人の視聴者情報を含みうるため、サンプル(.example)以外はコミットしない
+cfg/user_aliases.json
+
 # Test / lint cache
 .pytest_cache/
 .ruff_cache/

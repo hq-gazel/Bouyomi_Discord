@@ -21,9 +21,11 @@ from lib.config import Settings, load_settings
 from lib.discord_bot import DiscordVoiceBot
 from lib.tts_client import TtsClient
 from lib.twitch_bot import TwitchChatBot
+from lib.user_aliases import load_user_aliases
 
 _PROJECT_ROOT = Path(__file__).parent
 _TTS_SERVER_PATH = _PROJECT_ROOT / "tts_server.py"
+_USER_ALIASES_PATH = _PROJECT_ROOT / "cfg" / "user_aliases.json"
 _TTS_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
@@ -79,6 +81,7 @@ async def _stop_tts_server_process(
 async def main() -> None:
     try:
         settings = load_settings()
+        user_aliases = load_user_aliases(_USER_ALIASES_PATH)
     except RuntimeError as e:
         print(f"設定エラー: {e}", file=sys.stderr)
         sys.exit(1)
@@ -99,7 +102,7 @@ async def main() -> None:
 
     bridge = CommentQueueBridge()
     discord_bot = DiscordVoiceBot(settings, bridge, tts_client)
-    twitch_bot = TwitchChatBot(settings, bridge)
+    twitch_bot = TwitchChatBot(settings, bridge, user_aliases)
 
     try:
         async with asyncio.TaskGroup() as tg:

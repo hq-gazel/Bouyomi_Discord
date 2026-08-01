@@ -82,6 +82,27 @@ uv run main.py
 | `TWITCH_OAUTH_TOKEN` | 必須 | TwitchチャットBot用OAuthトークン(`oauth:`形式) |
 | `TWITCH_BOT_NICK` | 必須 | TwitchチャットBotのニックネーム |
 | `TWITCH_CHANNEL` | 必須 | コメントを取得する対象のTwitchチャンネル名 |
+| `TWITCH_COMMENT_TEMPLATE` | 任意 | 読み上げ前にコメントへ適用するテンプレート文字列。デフォルト`{username}さん、{comment}` |
+
+### Twitchコメントの読み上げテンプレートとユーザーエイリアス
+
+`TWITCH_COMMENT_TEMPLATE` は `{username}`(発言者名)と `{comment}`(コメント本文)の
+2つのプレースホルダーのみ使用できるテンプレート文字列で、敬称や語順を自由に変更できる
+(例: `{username} からのコメント: {comment}`)。それ以外のプレースホルダーを含めると
+起動時にエラーになる。
+
+`{username}` に入る名前は、`cfg/user_aliases.json`(Git管理対象外)に発言者の
+Twitchログイン名(小文字)をキーとしたエイリアスを登録しておくとそれが優先され、
+未登録の場合はTwitchの表示名がそのまま使われる。書式は `cfg/user_aliases.json.example`
+を参照(コピーして `cfg/user_aliases.json` を作成する)。ファイル自体が存在しない場合は
+常に表示名が使われる(エラーにはならない)。
+
+```json
+{
+  "twitchuser1": "ゆーざーいち",
+  "another_login": "アナザー"
+}
+```
 
 ### Irodori-TTS連携
 
