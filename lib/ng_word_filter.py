@@ -10,6 +10,9 @@ import re
 import unicodedata
 from pathlib import Path
 
+_URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
 
 def load_ng_words(path: Path) -> list[str]:
     """`path` のテキストファイルからNGワード一覧を読み込む。
@@ -33,6 +36,17 @@ def load_ng_words(path: Path) -> list[str]:
     )
     # dict.fromkeys()はO(n)で順序を維持したまま重複除去できる。
     return list(dict.fromkeys(words))
+
+
+def mask_urls_and_emails(text: str) -> str:
+    """`text` 中のURL・メールアドレスを、読み上げ用の短いプレースホルダーに置換する。
+
+    URLの中に `@` を含むケース(例: `http://user@example.com/`)を後段の
+    メールアドレス正規表現が誤って二重処理しないよう、URLの置換を先に行う。
+    """
+    result = _URL_PATTERN.sub("URL省略", text)
+    result = _EMAIL_PATTERN.sub("メールアドレス省略", result)
+    return result
 
 
 class NgWordMasker:

@@ -22,7 +22,7 @@ from twitchio.ext import commands
 
 from lib.bridge import CommentQueueBridge
 from lib.config import Settings
-from lib.ng_word_filter import NgWordMasker
+from lib.ng_word_filter import NgWordMasker, mask_urls_and_emails
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,8 @@ class _ChatRelayBot(commands.Bot):
         発言者情報(Chatter)がname/display_nameともに揃っている場合のみ
         テンプレートを適用し、それ以外(発言者不明)はコメント本文のみを返す。
         """
-        comment = self._ng_word_masker.mask(message.content)
+        comment = mask_urls_and_emails(message.content or "")
+        comment = self._ng_word_masker.mask(comment)
 
         author = message.author
         if isinstance(author, Chatter) and author.name and author.display_name:

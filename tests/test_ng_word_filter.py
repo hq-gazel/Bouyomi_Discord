@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lib.ng_word_filter import NgWordMasker, load_ng_words
+from lib.ng_word_filter import NgWordMasker, load_ng_words, mask_urls_and_emails
 
 
 def test_load_ng_words_returns_empty_list_when_file_missing(tmp_path: Path) -> None:
@@ -104,3 +104,47 @@ def test_mask_prefers_longer_word_match() -> None:
     result = NgWordMasker(["死ね", "死ねばいい"]).mask("死ねばいいのに")
 
     assert result == "ピーのに"
+
+
+def test_mask_urls_and_emails_replaces_https_url() -> None:
+    """`https://`で始まるURLが`URL省略`に置換されること。"""
+    result = mask_urls_and_emails("見て https://example.com/page です")
+
+    assert result == "見て URL省略 です"
+
+
+def test_mask_urls_and_emails_replaces_www_url_without_scheme() -> None:
+    """スキームなしの`www.`始まりURLが`URL省略`に置換されること。"""
+    result = mask_urls_and_emails("見て www.example.com/page です")
+
+    assert result == "見て URL省略 です"
+
+
+def test_mask_urls_and_emails_replaces_email_address() -> None:
+    """メールアドレスが`メールアドレス省略`に置換されること。"""
+    result = mask_urls_and_emails("連絡先は test@example.com です")
+
+    assert result == "連絡先は メールアドレス省略 です"
+
+
+def test_mask_urls_and_emails_replaces_both_url_and_email() -> None:
+    """1つのテキストにURLとメールアドレス両方が含まれる場合、両方とも置換されること。"""
+    result = mask_urls_and_emails(
+        "サイトは https://example.com/page 、連絡先は test@example.com です"
+    )
+
+    assert result == "サイトは URL省略 、連絡先は メールアドレス省略 です"
+
+
+def test_mask_urls_and_emails_does_not_double_process_at_sign_in_url() -> None:
+    """URL中に`@`を含む場合、メールアドレス側の正規表現に二重処理されないこと。"""
+    result = mask_urls_and_emails("これ http://user@example.com/path を見て")
+
+    assert result == "これ URL省略 を見て"
+
+
+def test_mask_urls_and_emails_returns_unchanged_text_without_url_or_email() -> None:
+    """URL・メールアドレスを含まないテキストは無変化で返ること。"""
+    result = mask_urls_and_emails("こんにちは、元気ですか?")
+
+    assert result == "こんにちは、元気ですか?"
