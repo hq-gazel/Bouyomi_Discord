@@ -26,29 +26,50 @@ def load_ng_words(path: Path) -> list[str]:
     except OSError as e:
         raise RuntimeError(f"NGワードファイル '{path}' の読み込みに失敗しました: {e}") from e
 
-    ng_words: list[str] = []
-    for line in raw_text.splitlines():
-        word = line.strip()
-        if not word or word.startswith("#"):
-            continue
-        if word not in ng_words:
-            ng_words.append(word)
-
-    return ng_words
+    words = (
+        line.strip()
+        for line in raw_text.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    )
+    # dict.fromkeys()はO(n)で順序を維持したまま重複除去できる。
+    return list(dict.fromkeys(words))
 
 
-def mask_ng_words(text: str, ng_words: list[str], placeholder: str = "ピー") -> str:
-    """`text` に含まれるNGワードを `placeholder` に置換する(部分一致・大文字小文字無視)。
+class NgWordMasker:
+    """NGワード一覧を事前コンパイルし、テキストへの伏字置換を高速に行うクラス。
 
-    `text` および各NGワードは `unicodedata.normalize("NFKC", ...)` で正規化した
-    上で比較・置換する(全角英数字と半角英数字の表記揺れなどを吸収するため)。
+    コメント1件ごとに全NGワードを正規化・再コンパイルしていた旧実装
+    (`mask_ng_words`)に対し、構築時に1本の正規表現へまとめておくことで
+    `mask()` 呼び出しのたびの再コンパイルコストを排除する。
     """
-    result = unicodedata.normalize("NFKC", text)
 
-    for word in ng_words:
-        normalized_word = unicodedata.normalize("NFKC", word)
-        if not normalized_word:
-            continue
-        result = re.sub(re.escape(normalized_word), placeholder, result, flags=re.IGNORECASE)
+    def __init__(self, ng_words: list[str], placeholder: str = "ピー") -> None:
+        self._placeholder = placeholder
+        self._pattern: re.Pattern[str] | None = self._build_pattern(ng_words)
 
-    return result
+    @staticmethod
+    def _build_pattern(ng_words: list[str]) -> re.Pattern[str] | None:
+        normalized_words = [
+            unicodedata.normalize("NFKC", word) for word in ng_words if word
+        ]
+        normalized_words = [word for word in normalized_words if word]
+        if not normalized_words:
+            return None
+
+        # 長い語を優先してマッチさせるため、長さ降順に並べてから`|`結合する
+        # (例: "死ね"と"死ねばいい"が両方登録されていた場合の部分一致順序対策)。
+        normalized_words.sort(key=len, reverse=True)
+        combined = "|".join(re.escape(word) for word in normalized_words)
+        return re.compile(combined, flags=re.IGNORECASE)
+
+    def mask(self, text: str) -> str:
+        """`text` に含まれるNGワードを伏字プレースホルダーに置換する(部分一致・大文字小文字無視)。
+
+        `text` は `unicodedata.normalize("NFKC", ...)` で正規化した上で比較・
+        置換する(全角英数字と半角英数字の表記揺れなどを吸収するため)。
+        NGワードが0件の場合もNFKC正規化したtextを返す(現行挙動と同じ)。
+        """
+        normalized_text = unicodedata.normalize("NFKC", text)
+        if self._pattern is None:
+            return normalized_text
+        return self._pattern.sub(self._placeholder, normalized_text)

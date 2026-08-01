@@ -19,7 +19,7 @@ from pathlib import Path
 from lib.bridge import CommentQueueBridge
 from lib.config import Settings, load_settings
 from lib.discord_bot import DiscordVoiceBot
-from lib.ng_word_filter import load_ng_words
+from lib.ng_word_filter import NgWordMasker, load_ng_words
 from lib.tts_client import TtsClient
 from lib.twitch_bot import TwitchChatBot
 from lib.user_aliases import load_user_aliases
@@ -84,7 +84,7 @@ async def main() -> None:
     try:
         settings = load_settings()
         user_aliases = load_user_aliases(_USER_ALIASES_PATH)
-        ng_words = load_ng_words(_NG_WORDS_PATH)
+        ng_word_masker = NgWordMasker(load_ng_words(_NG_WORDS_PATH))
     except RuntimeError as e:
         print(f"設定エラー: {e}", file=sys.stderr)
         sys.exit(1)
@@ -105,7 +105,7 @@ async def main() -> None:
 
     bridge = CommentQueueBridge()
     discord_bot = DiscordVoiceBot(settings, bridge, tts_client)
-    twitch_bot = TwitchChatBot(settings, bridge, user_aliases, ng_words)
+    twitch_bot = TwitchChatBot(settings, bridge, user_aliases, ng_word_masker)
 
     try:
         async with asyncio.TaskGroup() as tg:

@@ -1,10 +1,10 @@
-"""lib.ng_word_filter の load_ng_words / mask_ng_words の挙動を検証するユニットテスト。"""
+"""lib.ng_word_filter の load_ng_words / NgWordMasker の挙動を検証するユニットテスト。"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from lib.ng_word_filter import load_ng_words, mask_ng_words
+from lib.ng_word_filter import NgWordMasker, load_ng_words
 
 
 def test_load_ng_words_returns_empty_list_when_file_missing(tmp_path: Path) -> None:
@@ -46,37 +46,61 @@ def test_load_ng_words_strips_surrounding_whitespace(tmp_path: Path) -> None:
     assert result == ["死ね", "バカ"]
 
 
-def test_mask_ng_words_replaces_matched_words() -> None:
+def test_load_ng_words_deduplicates_preserving_order(tmp_path: Path) -> None:
+    """重複するNGワードは順序を維持したまま除去されること。"""
+    path = tmp_path / "ng_words.txt"
+    path.write_text("死ね\nバカ\n死ね\n", encoding="utf-8")
+
+    result = load_ng_words(path)
+
+    assert result == ["死ね", "バカ"]
+
+
+def test_mask_replaces_matched_words() -> None:
     """NGワードが伏字プレースホルダーに置換されること。"""
-    result = mask_ng_words("お前なんか死ねばいいのに", ["死ね"])
+    result = NgWordMasker(["死ね"]).mask("お前なんか死ねばいいのに")
 
     assert result == "お前なんかピーばいいのに"
 
 
-def test_mask_ng_words_matches_case_insensitively() -> None:
+def test_mask_matches_case_insensitively() -> None:
     """大文字小文字を無視してマッチすること。"""
-    result = mask_ng_words("あいつマジでdqnだわ", ["DQN"])
+    result = NgWordMasker(["DQN"]).mask("あいつマジでdqnだわ")
 
     assert result == "あいつマジでピーだわ"
 
 
-def test_mask_ng_words_returns_normalized_text_when_no_match() -> None:
+def test_mask_returns_normalized_text_when_no_match() -> None:
     """NGワードが含まれないテキストはプレースホルダー未挿入で返ること
     (ただしNFKC正規化により全角英数字は半角化される)。"""
-    result = mask_ng_words("こんにちはABC123", ["死ね"])
+    result = NgWordMasker(["死ね"]).mask("こんにちはABC123")
 
     assert result == "こんにちはABC123"
 
 
-def test_mask_ng_words_normalizes_fullwidth_characters() -> None:
+def test_mask_normalizes_fullwidth_characters() -> None:
     """全角英数字がNFKC正規化により半角化されること。"""
-    result = mask_ng_words("ＡＢＣ１２３", [])
+    result = NgWordMasker([]).mask("ＡＢＣ１２３")
 
     assert result == "ABC123"
 
 
-def test_mask_ng_words_does_nothing_when_ng_words_empty() -> None:
+def test_mask_does_nothing_when_ng_words_empty() -> None:
     """空リストならプレースホルダーが一切挿入されないこと。"""
-    result = mask_ng_words("死ねばいいのに", [])
+    result = NgWordMasker([]).mask("死ねばいいのに")
 
     assert result == "死ねばいいのに"
+
+
+def test_mask_skips_empty_ng_word() -> None:
+    """空文字のNGワードが混じっていてもエラーにならず無視されること。"""
+    result = NgWordMasker(["", "死ね"]).mask("死ねばいいのに")
+
+    assert result == "ピーばいいのに"
+
+
+def test_mask_prefers_longer_word_match() -> None:
+    """短い語と長い語が両方登録されている場合、長い語優先でマッチすること。"""
+    result = NgWordMasker(["死ね", "死ねばいい"]).mask("死ねばいいのに")
+
+    assert result == "ピーのに"
