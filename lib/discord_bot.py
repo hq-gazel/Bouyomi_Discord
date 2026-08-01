@@ -92,6 +92,12 @@ class DiscordVoiceBot:
         if self._playback_task is not None:
             self._playback_task.cancel()
 
+        pending_tasks = [
+            t for t in (self._synthesize_task, self._playback_task) if t is not None
+        ]
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
+
         if self._voice_client is not None and self._voice_client.is_connected():
             await self._voice_client.disconnect()
             self._voice_client = None
@@ -112,32 +118,46 @@ class DiscordVoiceBot:
         if self._playback_task is None:
             self._playback_task = asyncio.create_task(self._playback_loop())
 
+    async def _sync_voice_client(self, target_channel: discord.VoiceChannel | None) -> None:
+        """target_channelに合わせてBOTのVoiceClientをconnect/move_to/disconnectする。
+
+        呼び出し側が既に self._voice_lock を保持している前提。
+        """
+        if target_channel is not None:
+            if self._voice_client is not None and self._voice_client.is_connected():
+                if self._voice_client.channel.id != target_channel.id:
+                    await self._voice_client.move_to(target_channel)
+            else:
+                self._voice_client = await target_channel.connect()
+        else:
+            if self._voice_client is not None and self._voice_client.is_connected():
+                await self._voice_client.disconnect()
+            self._voice_client = None
+
     async def on_voice_state_update(
         self,
         member: discord.Member,
-        _before: discord.VoiceState,
+        before: discord.VoiceState,
         after: discord.VoiceState,
     ) -> None:
         """管理者のボイス状態変化に応じて、BOTのVC接続を追従させる。"""
         if member.id != self._settings.discord_admin_user_id:
             return
+        if before.channel == after.channel:
+            return
 
         async with self._voice_lock:
-            if after.channel is not None:
-                # 管理者が(別の)VCに入室/移動した
-                if (
-                    self._voice_client is not None
-                    and self._voice_client.is_connected()
-                ):
-                    if self._voice_client.channel.id != after.channel.id:
-                        await self._voice_client.move_to(after.channel)
-                else:
-                    self._voice_client = await after.channel.connect()
-            else:
-                # 管理者が全VCから退出した
-                if self._voice_client is not None and self._voice_client.is_connected():
-                    await self._voice_client.disconnect()
-                self._voice_client = None
+            await self._sync_voice_client(after.channel)
+
+    async def _fetch_member_fallback(
+        self, guild: discord.Guild, member_id: int
+    ) -> discord.Member | None:
+        """guild.get_memberがキャッシュ未ヒットだった場合のAPI経由フォールバック。"""
+        try:
+            return await guild.fetch_member(member_id)
+        except (discord.NotFound, discord.HTTPException) as e:
+            print(f"[discord_bot] guild.fetch_memberフォールバックに失敗しました(guild={guild.id}): {e}")
+            return None
 
     async def _reconcile_admin_voice_state(self) -> None:
         """管理者の現在のVC在室状況を能動的にチェックし、BOTの接続状態を同期する。
@@ -153,25 +173,19 @@ class DiscordVoiceBot:
                 guild = self._client.get_guild(self._settings.discord_guild_id)
                 if guild is not None:
                     member = guild.get_member(admin_id)
+                    if member is None:
+                        member = await self._fetch_member_fallback(guild, admin_id)
             else:
                 for guild in self._client.guilds:
                     found = guild.get_member(admin_id)
+                    if found is None:
+                        found = await self._fetch_member_fallback(guild, admin_id)
                     if found is not None:
                         member = found
                         break
 
-            if member is not None and member.voice is not None and member.voice.channel is not None:
-                target_channel = member.voice.channel
-                if self._voice_client is not None and self._voice_client.is_connected():
-                    if self._voice_client.channel.id != target_channel.id:
-                        await self._voice_client.move_to(target_channel)
-                else:
-                    self._voice_client = await target_channel.connect()
-            else:
-                # 管理者がどのVCにもいない場合、接続中なら切断しておく。
-                if self._voice_client is not None and self._voice_client.is_connected():
-                    await self._voice_client.disconnect()
-                self._voice_client = None
+            target_channel = member.voice.channel if member is not None and member.voice is not None else None
+            await self._sync_voice_client(target_channel)
 
     async def _before_reconcile_loop(self) -> None:
         await self._client.wait_until_ready()
@@ -184,12 +198,38 @@ class DiscordVoiceBot:
         except Exception as e:
             print(f"[discord_bot] 定期同期処理でエラーが発生しました: {e}")
 
+    async def _backoff_after_failure(
+        self, loop_name: str, consecutive_failures: int
+    ) -> None:
+        """連続失敗回数に応じて、次の再試行までの待機を行う。
+
+        一定回数以上連続で失敗した場合はサーキットオープンとして扱い、
+        固定間隔での再試行に切り替える(閾値未満は指数バックオフ)。
+        """
+        s = self._settings
+        if consecutive_failures >= s.retry_circuit_open_threshold:
+            print(
+                f"[discord_bot] {loop_name}: 連続{consecutive_failures}回失敗したため"
+                f"サーキットオープンとして扱い、{s.retry_circuit_open_interval_seconds}秒間隔に切り替えます。"
+            )
+            await asyncio.sleep(s.retry_circuit_open_interval_seconds)
+            return
+        backoff = min(
+            s.retry_backoff_initial_seconds * (2 ** (consecutive_failures - 1)),
+            s.retry_backoff_max_seconds,
+        )
+        print(
+            f"[discord_bot] {loop_name}: {backoff:.1f}秒後に再試行します(連続失敗{consecutive_failures}回)。"
+        )
+        await asyncio.sleep(backoff)
+
     async def _synthesize_loop(self) -> None:
         """Twitchコメントを取り出してTTS合成し、結果を再生キューへ渡し続けるループ。
 
         再生ループとは別タスクとして動くため、現在再生中の音声がある間にも
         次のコメントの合成をバックグラウンドで進められる(パイプライン化)。
         """
+        consecutive_failures = 0
         while True:
             text = await self._bridge.wait_and_take()
             print(f"[discord_bot] TTS合成を開始します: {text!r}")
@@ -197,12 +237,16 @@ class DiscordVoiceBot:
                 wav_bytes = await self._tts_client.synthesize(text)
             except Exception as e:
                 print(f"[discord_bot] TTS合成に失敗しました: {e}")
+                consecutive_failures += 1
+                await self._backoff_after_failure("synthesize", consecutive_failures)
                 continue
+            consecutive_failures = 0
             print(f"[discord_bot] TTS合成完了({len(wav_bytes)} bytes)。再生キューへ渡します。")
             await self._audio_queue.put(wav_bytes)
 
     async def _playback_loop(self) -> None:
         """合成済み音声データを再生キューから取り出し、順次VCで再生し続けるループ。"""
+        consecutive_failures = 0
         while True:
             wav_bytes = await self._audio_queue.get()
             print("[discord_bot] 再生します。")
@@ -210,7 +254,10 @@ class DiscordVoiceBot:
                 await self._play(wav_bytes)
             except Exception as e:
                 print(f"[discord_bot] 音声再生に失敗しました: {e}")
+                consecutive_failures += 1
+                await self._backoff_after_failure("playback", consecutive_failures)
                 continue
+            consecutive_failures = 0
             print("[discord_bot] 再生完了。")
 
     async def _play(self, wav_bytes: bytes) -> None:
@@ -250,7 +297,7 @@ class DiscordVoiceBot:
         print(f"[discord_bot] 再生を開始しました(タイムアウト{timeout}秒)。")
         try:
             await asyncio.wait_for(finished_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             print(
                 f"[discord_bot] {timeout}秒応答なしのためタイムアウトしました。"
                 "復旧を試みます。"
