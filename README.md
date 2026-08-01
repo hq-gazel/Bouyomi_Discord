@@ -136,6 +136,9 @@ NGワードは `cfg/ng_words.txt`(Git管理対象)に1行1語で登録されて�
 | `TTS_SERVER_PORT` | 任意 | TTSサーバーのバインドポート。デフォルト`8765` |
 | `TTS_STARTUP_TIMEOUT_SECONDS` | 任意 | TTSサーバーが起動完了(healthy)になるまでのタイムアウト秒数。デフォルト`600.0` |
 | `TTS_DEBUG_LOGGING` | 任意 | TTS合成のステージ別タイミングログを標準出力に出すか。デフォルト`false` |
+| `TTS_SYNTHESIZE_TIMEOUT_SECONDS` | 任意 | TTSサーバーへの`/synthesize`リクエストのタイムアウト秒数。デフォルト`60.0` |
+| `TTS_HEALTH_CHECK_TIMEOUT_SECONDS` | 任意 | TTSサーバーへの`/health`リクエストのタイムアウト秒数。デフォルト`5.0` |
+| `TTS_SHUTDOWN_TIMEOUT_SECONDS` | 任意 | TTSサイドカーサブプロセスをterminate()してからkill()に切り替えるまでの猶予秒数。デフォルト`10.0` |
 
 ### 任意設定
 

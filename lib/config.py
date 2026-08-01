@@ -91,6 +91,9 @@ class Settings:
     tts_server_port: int
     tts_debug_logging: bool
     tts_startup_timeout_seconds: float
+    tts_synthesize_timeout_seconds: float
+    tts_health_check_timeout_seconds: float
+    tts_shutdown_timeout_seconds: float
 
     # 任意
     ffmpeg_path: str | None
@@ -179,5 +182,12 @@ def load_settings() -> Settings:
         ),
         tts_debug_logging=_get_bool("TTS_DEBUG_LOGGING", False),
         tts_startup_timeout_seconds=_get_float("TTS_STARTUP_TIMEOUT_SECONDS", 600.0),
+        tts_synthesize_timeout_seconds=_get_float(
+            "TTS_SYNTHESIZE_TIMEOUT_SECONDS", 60.0
+        ),
+        tts_health_check_timeout_seconds=_get_float(
+            "TTS_HEALTH_CHECK_TIMEOUT_SECONDS", 5.0
+        ),
+        tts_shutdown_timeout_seconds=_get_float("TTS_SHUTDOWN_TIMEOUT_SECONDS", 10.0),
         ffmpeg_path=_get_optional("FFMPEG_PATH"),
     )

@@ -10,11 +10,6 @@ import asyncio
 
 import httpx
 
-# 音声合成は数秒〜数十秒かかりうるため、余裕を持ったタイムアウトを設定する。
-_SYNTHESIZE_TIMEOUT_SECONDS = 60.0
-# ヘルスチェックは軽量なので短めのタイムアウトで十分。
-_HEALTH_CHECK_TIMEOUT_SECONDS = 5.0
-
 
 class TtsClient:
     """TTSサイドカーサーバーへのHTTPクライアント。
@@ -23,9 +18,20 @@ class TtsClient:
     インスタンス生成時に1つだけ保持して使い回す(接続確立コストの削減)。
     """
 
-    def __init__(self, host: str, port: int) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        synthesize_timeout_seconds: float = 60.0,
+        health_check_timeout_seconds: float = 5.0,
+    ) -> None:
         self._base_url = f"http://{host}:{port}"
-        self._client = httpx.AsyncClient(timeout=_SYNTHESIZE_TIMEOUT_SECONDS)
+        # 音声合成は数秒〜数十秒かかりうるため、余裕を持ったタイムアウトを設定する。
+        self._synthesize_timeout_seconds = synthesize_timeout_seconds
+        # ヘルスチェックは軽量なので短めのタイムアウトで十分。
+        self._health_check_timeout_seconds = health_check_timeout_seconds
+        self._client = httpx.AsyncClient(timeout=self._synthesize_timeout_seconds)
 
     async def synthesize(self, text: str) -> bytes:
         """POST /synthesize を呼び出し、WAVバイト列を返す。
@@ -63,7 +69,7 @@ class TtsClient:
         """
         try:
             await self._client.post(
-                f"{self._base_url}/shutdown", timeout=_HEALTH_CHECK_TIMEOUT_SECONDS
+                f"{self._base_url}/shutdown", timeout=self._health_check_timeout_seconds
             )
         except httpx.RequestError:
             pass
@@ -82,7 +88,7 @@ class TtsClient:
         while True:
             try:
                 response = await self._client.get(
-                    f"{self._base_url}/health", timeout=_HEALTH_CHECK_TIMEOUT_SECONDS
+                    f"{self._base_url}/health", timeout=self._health_check_timeout_seconds
                 )
                 if response.status_code == 200:
                     return

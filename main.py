@@ -28,7 +28,6 @@ _PROJECT_ROOT = Path(__file__).parent
 _TTS_SERVER_PATH = _PROJECT_ROOT / "tts_server.py"
 _USER_ALIASES_PATH = _PROJECT_ROOT / "cfg" / "user_aliases.json"
 _NG_WORDS_PATH = _PROJECT_ROOT / "cfg" / "ng_words.txt"
-_TTS_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
 def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
@@ -60,7 +59,9 @@ def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
 
 
 async def _stop_tts_server_process(
-    proc: subprocess.Popen[bytes], tts_client: TtsClient
+    proc: subprocess.Popen[bytes],
+    tts_client: TtsClient,
+    shutdown_timeout_seconds: float,
 ) -> None:
     """TTSサイドカーサブプロセスを終了する(terminate優先、タイムアウト時はkill)。
 
@@ -74,7 +75,7 @@ async def _stop_tts_server_process(
     await tts_client.shutdown()
     proc.terminate()
     try:
-        proc.wait(timeout=_TTS_SHUTDOWN_TIMEOUT_SECONDS)
+        proc.wait(timeout=shutdown_timeout_seconds)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -92,13 +93,20 @@ async def main() -> None:
     print("[main] Irodori-TTSサイドカーサーバーを起動しています...")
     tts_process = _start_tts_server_process(settings)
 
-    tts_client = TtsClient(host=settings.tts_server_host, port=settings.tts_server_port)
+    tts_client = TtsClient(
+        host=settings.tts_server_host,
+        port=settings.tts_server_port,
+        synthesize_timeout_seconds=settings.tts_synthesize_timeout_seconds,
+        health_check_timeout_seconds=settings.tts_health_check_timeout_seconds,
+    )
 
     try:
         await tts_client.wait_until_healthy(timeout=settings.tts_startup_timeout_seconds)
     except TimeoutError as e:
         print(f"TTSサーバー起動エラー: {e}", file=sys.stderr)
-        await _stop_tts_server_process(tts_process, tts_client)
+        await _stop_tts_server_process(
+            tts_process, tts_client, settings.tts_shutdown_timeout_seconds
+        )
         sys.exit(1)
 
     print("[main] Irodori-TTSサイドカーサーバーの起動を確認しました。")
@@ -115,7 +123,9 @@ async def main() -> None:
         print("[main] シャットダウン処理を開始します...")
         await discord_bot.shutdown()
         await twitch_bot.shutdown()
-        await _stop_tts_server_process(tts_process, tts_client)
+        await _stop_tts_server_process(
+            tts_process, tts_client, settings.tts_shutdown_timeout_seconds
+        )
         print("[main] シャットダウン完了。")
 
 
