@@ -130,10 +130,16 @@ rem ---- 4. Bouyomi_Discord側(自環境)の依存関係インストール ----
 echo.
 echo [4/6] Bouyomi_Discordの依存関係を構築しています (uv sync)...
 pushd "%PROJECT_ROOT%"
+if errorlevel 1 goto PUSHD_PROJECT_ROOT_FAILED
 
 uv sync
 if errorlevel 1 goto UV_SYNC_PROJECT_FAILED
 goto UV_SYNC_PROJECT_OK
+
+:PUSHD_PROJECT_ROOT_FAILED
+echo [エラー] "%PROJECT_ROOT%" ディレクトリへの移動に失敗しました。パスを確認してください。
+pause
+exit /b 1
 
 :UV_SYNC_PROJECT_FAILED
 echo [エラー] Bouyomi_Discordの "uv sync" に失敗しました。
