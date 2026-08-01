@@ -11,6 +11,7 @@ Discord BOTがボイスチャンネルで読み上げる常駐アプリケーシ
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import sys
@@ -24,10 +25,18 @@ from lib.tts_client import TtsClient
 from lib.twitch_bot import TwitchChatBot
 from lib.user_aliases import load_user_aliases
 
+logger = logging.getLogger(__name__)
+
 _PROJECT_ROOT = Path(__file__).parent
 _TTS_SERVER_PATH = _PROJECT_ROOT / "tts_server.py"
 _USER_ALIASES_PATH = _PROJECT_ROOT / "cfg" / "user_aliases.json"
 _NG_WORDS_PATH = _PROJECT_ROOT / "cfg" / "ng_words.txt"
+
+
+def _configure_logging(*, debug: bool) -> None:
+    """ルートロガーを初期化する。DEBUG_LOGGING有効時はDEBUGレベルにする。"""
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(level=level, format="[%(levelname)s] [%(name)s] %(message)s")
 
 
 def _start_tts_server_process(settings: Settings) -> subprocess.Popen[bytes]:
@@ -82,15 +91,21 @@ async def _stop_tts_server_process(
 
 
 async def main() -> None:
+    # 設定読み込み前はDEBUG_LOGGINGの値が分からないため、まずINFOで初期化し、
+    # 読み込み成功後にsettings.debug_loggingに応じてレベルを調整する。
+    _configure_logging(debug=False)
     try:
         settings = load_settings()
         user_aliases = load_user_aliases(_USER_ALIASES_PATH)
         ng_word_masker = NgWordMasker(load_ng_words(_NG_WORDS_PATH))
     except RuntimeError as e:
-        print(f"設定エラー: {e}", file=sys.stderr)
+        logger.error(f"設定エラー: {e}")
         sys.exit(1)
 
-    print("[main] Irodori-TTSサイドカーサーバーを起動しています...")
+    if settings.debug_logging:
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    logger.info("Irodori-TTSサイドカーサーバーを起動しています...")
     tts_process = _start_tts_server_process(settings)
 
     tts_client = TtsClient(
@@ -103,13 +118,13 @@ async def main() -> None:
     try:
         await tts_client.wait_until_healthy(timeout=settings.tts_startup_timeout_seconds)
     except TimeoutError as e:
-        print(f"TTSサーバー起動エラー: {e}", file=sys.stderr)
+        logger.error(f"TTSサーバー起動エラー: {e}")
         await _stop_tts_server_process(
             tts_process, tts_client, settings.tts_shutdown_timeout_seconds
         )
         sys.exit(1)
 
-    print("[main] Irodori-TTSサイドカーサーバーの起動を確認しました。")
+    logger.info("Irodori-TTSサイドカーサーバーの起動を確認しました。")
 
     bridge = CommentQueueBridge()
     discord_bot = DiscordVoiceBot(settings, bridge, tts_client)
@@ -120,13 +135,13 @@ async def main() -> None:
             tg.create_task(discord_bot.run())
             tg.create_task(twitch_bot.run())
     finally:
-        print("[main] シャットダウン処理を開始します...")
+        logger.info("シャットダウン処理を開始します...")
         await discord_bot.shutdown()
         await twitch_bot.shutdown()
         await _stop_tts_server_process(
             tts_process, tts_client, settings.tts_shutdown_timeout_seconds
         )
-        print("[main] シャットダウン完了。")
+        logger.info("シャットダウン完了。")
 
 
 if __name__ == "__main__":

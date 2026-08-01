@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 
 import discord
 from discord.ext import tasks
@@ -21,6 +22,8 @@ from discord.ext import tasks
 from lib.bridge import CommentQueueBridge
 from lib.config import Settings
 from lib.tts_client import TtsClient
+
+logger = logging.getLogger(__name__)
 
 
 class DiscordVoiceBot:
@@ -75,11 +78,9 @@ class DiscordVoiceBot:
         if not discord.opus.is_loaded():
             discord.opus._load_default()
             if discord.opus.is_loaded():
-                print("[discord_bot] libopusをロードしました。")
+                logger.info("libopusをロードしました。")
             else:
-                print(
-                    "[discord_bot] libopusのロードに失敗しました。音声再生ができません。"
-                )
+                logger.error("libopusのロードに失敗しました。音声再生ができません。")
 
         await self._client.start(self._settings.discord_bot_token)
 
@@ -106,7 +107,7 @@ class DiscordVoiceBot:
 
     async def on_ready(self) -> None:
         """接続完了時、管理者の現在のVC状態を能動的に同期し、定期タスクを開始する。"""
-        print(f"[discord_bot] ログイン完了: {self._client.user}")
+        logger.info(f"ログイン完了: {self._client.user}")
 
         await self._reconcile_admin_voice_state()
 
@@ -156,7 +157,7 @@ class DiscordVoiceBot:
         try:
             return await guild.fetch_member(member_id)
         except (discord.NotFound, discord.HTTPException) as e:
-            print(f"[discord_bot] guild.fetch_memberフォールバックに失敗しました(guild={guild.id}): {e}")
+            logger.warning(f"guild.fetch_memberフォールバックに失敗しました(guild={guild.id}): {e}")
             return None
 
     async def _reconcile_admin_voice_state(self) -> None:
@@ -196,7 +197,7 @@ class DiscordVoiceBot:
         try:
             await self._reconcile_admin_voice_state()
         except Exception as e:
-            print(f"[discord_bot] 定期同期処理でエラーが発生しました: {e}")
+            logger.error(f"定期同期処理でエラーが発生しました: {e}")
 
     async def _backoff_after_failure(
         self, loop_name: str, consecutive_failures: int
@@ -208,8 +209,8 @@ class DiscordVoiceBot:
         """
         s = self._settings
         if consecutive_failures >= s.retry_circuit_open_threshold:
-            print(
-                f"[discord_bot] {loop_name}: 連続{consecutive_failures}回失敗したため"
+            logger.warning(
+                f"{loop_name}: 連続{consecutive_failures}回失敗したため"
                 f"サーキットオープンとして扱い、{s.retry_circuit_open_interval_seconds}秒間隔に切り替えます。"
             )
             await asyncio.sleep(s.retry_circuit_open_interval_seconds)
@@ -218,8 +219,8 @@ class DiscordVoiceBot:
             s.retry_backoff_initial_seconds * (2 ** (consecutive_failures - 1)),
             s.retry_backoff_max_seconds,
         )
-        print(
-            f"[discord_bot] {loop_name}: {backoff:.1f}秒後に再試行します(連続失敗{consecutive_failures}回)。"
+        logger.warning(
+            f"{loop_name}: {backoff:.1f}秒後に再試行します(連続失敗{consecutive_failures}回)。"
         )
         await asyncio.sleep(backoff)
 
@@ -232,16 +233,16 @@ class DiscordVoiceBot:
         consecutive_failures = 0
         while True:
             text = await self._bridge.wait_and_take()
-            print(f"[discord_bot] TTS合成を開始します: {text!r}")
+            logger.info(f"TTS合成を開始します: {text!r}")
             try:
                 wav_bytes = await self._tts_client.synthesize(text)
             except Exception as e:
-                print(f"[discord_bot] TTS合成に失敗しました: {e}")
+                logger.error(f"TTS合成に失敗しました: {e}")
                 consecutive_failures += 1
                 await self._backoff_after_failure("synthesize", consecutive_failures)
                 continue
             consecutive_failures = 0
-            print(f"[discord_bot] TTS合成完了({len(wav_bytes)} bytes)。再生キューへ渡します。")
+            logger.info(f"TTS合成完了({len(wav_bytes)} bytes)。再生キューへ渡します。")
             await self._audio_queue.put(wav_bytes)
 
     async def _playback_loop(self) -> None:
@@ -249,16 +250,16 @@ class DiscordVoiceBot:
         consecutive_failures = 0
         while True:
             wav_bytes = await self._audio_queue.get()
-            print("[discord_bot] 再生します。")
+            logger.info("再生します。")
             try:
                 await self._play(wav_bytes)
             except Exception as e:
-                print(f"[discord_bot] 音声再生に失敗しました: {e}")
+                logger.error(f"音声再生に失敗しました: {e}")
                 consecutive_failures += 1
                 await self._backoff_after_failure("playback", consecutive_failures)
                 continue
             consecutive_failures = 0
-            print("[discord_bot] 再生完了。")
+            logger.info("再生完了。")
 
     async def _play(self, wav_bytes: bytes) -> None:
         """WAV音声データを、現在接続中のVCで再生する(再生完了まで待機する)。
@@ -272,7 +273,7 @@ class DiscordVoiceBot:
             voice_client = self._voice_client
 
         if voice_client is None or not voice_client.is_connected():
-            print("[discord_bot] VC未接続のため再生をスキップします。")
+            logger.warning("VC未接続のため再生をスキップします。")
             return
 
         if voice_client.is_playing():
@@ -283,7 +284,7 @@ class DiscordVoiceBot:
 
         def _after_playback(error: Exception | None) -> None:
             if error is not None:
-                print(f"[discord_bot] 再生中にエラーが発生しました: {error}")
+                logger.error(f"再生中にエラーが発生しました: {error}")
             loop.call_soon_threadsafe(finished_event.set)
 
         # 一時ファイル経由をやめ、メモリ上のWAVバイト列を直接ffmpegへパイプする。
@@ -294,20 +295,19 @@ class DiscordVoiceBot:
         )
         voice_client.play(source, after=_after_playback)
         timeout = self._settings.playback_timeout_seconds
-        print(f"[discord_bot] 再生を開始しました(タイムアウト{timeout}秒)。")
+        logger.info(f"再生を開始しました(タイムアウト{timeout}秒)。")
         try:
             await asyncio.wait_for(finished_event.wait(), timeout=timeout)
         except TimeoutError:
-            print(
-                f"[discord_bot] {timeout}秒応答なしのためタイムアウトしました。"
-                "復旧を試みます。"
+            logger.warning(
+                f"{timeout}秒応答なしのためタイムアウトしました。復旧を試みます。"
             )
             try:
                 source.cleanup()
             except Exception as e:
-                print(f"[discord_bot] 再生ソースのクリーンアップに失敗しました: {e}")
+                logger.error(f"再生ソースのクリーンアップに失敗しました: {e}")
             try:
                 voice_client.stop()
             except Exception as e:
-                print(f"[discord_bot] 再生停止に失敗しました: {e}")
+                logger.error(f"再生停止に失敗しました: {e}")
             raise

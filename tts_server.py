@@ -26,6 +26,7 @@ main.py側がsubprocess起動時に以下の環境変数をセットして渡す
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import sys
 import tempfile
@@ -35,6 +36,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 # lib.env_utilsはstdlibのみに依存するため、Irodori-TTS用の重い依存関係を
 # 持つこの別venvからでも import 可能(本ファイルはプロジェクトルート直下に
@@ -59,6 +62,12 @@ from irodori_tts.inference_runtime import (
     SamplingRequest,
     save_wav,
 )
+
+
+def _configure_logging(*, debug: bool) -> None:
+    """ルートロガーを初期化する。TTS_DEBUG_LOGGING有効時はDEBUGレベルにする。"""
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(level=level, format="[%(levelname)s] [%(name)s] %(message)s")
 
 
 @dataclass(frozen=True)
@@ -196,8 +205,8 @@ def _load_runtime_blocking(config: _ServerConfig) -> InferenceRuntime:
     model_device = _detect_model_device()
     model_precision = _resolve_model_precision(config.model_precision, model_device)
     codec_device = _resolve_codec_device(config.codec_device)
-    print(
-        f"[tts_server] loading checkpoint={checkpoint_path} model_device={model_device} "
+    logger.info(
+        f"loading checkpoint={checkpoint_path} model_device={model_device} "
         f"model_precision={model_precision} codec_device={codec_device} "
         f"compile_model={config.compile_model} compile_dynamic={config.compile_dynamic}"
     )
@@ -211,7 +220,7 @@ def _load_runtime_blocking(config: _ServerConfig) -> InferenceRuntime:
             compile_dynamic=config.compile_dynamic,
         )
     )
-    print("[tts_server] model load complete")
+    logger.info("model load complete")
     return runtime
 
 
@@ -224,12 +233,12 @@ def _warmup_runtime(runtime: InferenceRuntime, ref_latent_path: str, *, debug_lo
     落とす既存方針を踏襲。不安定な場合はIRODORI_TTS_COMPILE_MODEL=falseで
     ウォームアップ自体を無効化できる)。
     """
-    print("[tts_server] compileウォームアップを開始します(初回のみ時間がかかります)...")
-    log_fn = print if debug_logging else None
+    logger.info("compileウォームアップを開始します(初回のみ時間がかかります)...")
+    log_fn = logger.debug if debug_logging else None
     runtime.synthesize(
         SamplingRequest(text=_WARMUP_TEXT, ref_latent=ref_latent_path), log_fn=log_fn
     )
-    print("[tts_server] compileウォームアップが完了しました。")
+    logger.info("compileウォームアップが完了しました。")
 
 
 def _precompute_ref_latent(runtime: InferenceRuntime, ref_wav: str) -> str:
@@ -254,7 +263,7 @@ def _precompute_ref_latent(runtime: InferenceRuntime, ref_wav: str) -> str:
     fd, tmp_path = tempfile.mkstemp(suffix=".pt", prefix="tts_ref_latent_")
     os.close(fd)
     torch.save(ref_latent, tmp_path)
-    print(f"[tts_server] cached reference latent -> {tmp_path}")
+    logger.info(f"cached reference latent -> {tmp_path}")
     return tmp_path
 
 
@@ -322,7 +331,7 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
     assert ref_latent_path is not None
 
     def _synthesize_blocking() -> bytes:
-        log_fn = print if _state.debug_logging else None
+        log_fn = logger.debug if _state.debug_logging else None
         result = runtime.synthesize(
             SamplingRequest(text=text, ref_latent=ref_latent_path), log_fn=log_fn
         )
@@ -338,7 +347,7 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
     try:
         wav_bytes = await loop.run_in_executor(None, _synthesize_blocking)
     except Exception as e:
-        print(f"[tts_server] synthesize failed: {e}")
+        logger.error(f"synthesize failed: {e}")
         raise HTTPException(
             status_code=500,
             detail={"error": "synthesis_failed", "message": str(e)},
@@ -350,4 +359,5 @@ if __name__ == "__main__":
     import uvicorn
 
     _config = _load_config()
+    _configure_logging(debug=_config.debug_logging)
     uvicorn.run(app, host=_config.host, port=_config.port)

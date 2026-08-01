@@ -15,12 +15,16 @@ twitch_bot_nick はこのBOTの接続処理では使用しない。
 
 from __future__ import annotations
 
+import logging
+
 from twitchio import Chatter, Message
 from twitchio.ext import commands
 
 from lib.bridge import CommentQueueBridge
 from lib.config import Settings
 from lib.ng_word_filter import NgWordMasker
+
+logger = logging.getLogger(__name__)
 
 # TwitchIOのcommands.Botはprefix引数を必須とするが、コマンド機能自体は
 # 使わないため、ライブラリの要求を満たすためだけの固定値として扱う。
@@ -68,8 +72,8 @@ class _ChatRelayBot(commands.Bot):
 
     async def event_ready(self) -> None:
         """IRC認証・チャンネルJOINが完了した時点で呼ばれる。"""
-        print(
-            f"[twitch_bot] 接続完了: nick={self.nick} "
+        logger.info(
+            f"接続完了: nick={self.nick} "
             f"joined_channels={[ch.name for ch in self.connected_channels]}"
         )
 
@@ -81,7 +85,7 @@ class _ChatRelayBot(commands.Bot):
             return
 
         text = self._build_relay_text(message)
-        print(f"[twitch_bot] コメント受信: {text!r}")
+        logger.info(f"コメント受信: {text!r}")
         self._bridge.submit(text)
 
     def _build_relay_text(self, message: Message) -> str:

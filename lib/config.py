@@ -97,6 +97,7 @@ class Settings:
 
     # 任意
     ffmpeg_path: str | None
+    debug_logging: bool
 
 
 def _validate_template_placeholders(
@@ -190,4 +191,5 @@ def load_settings() -> Settings:
         ),
         tts_shutdown_timeout_seconds=_get_float("TTS_SHUTDOWN_TIMEOUT_SECONDS", 10.0),
         ffmpeg_path=_get_optional("FFMPEG_PATH"),
+        debug_logging=_get_bool("DEBUG_LOGGING", False),
     )
