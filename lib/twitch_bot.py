@@ -80,20 +80,26 @@ class _ChatRelayBot(commands.Bot):
         if not message.content:
             return
 
-        author = message.author
+        text = self._build_relay_text(message)
+        print(f"[twitch_bot] コメント受信: {text!r}")
+        self._bridge.submit(text)
+
+    def _build_relay_text(self, message: Message) -> str:
+        """受信メッセージから、bridgeへ渡す読み上げテキストを組み立てる。
+
+        発言者情報(Chatter)がname/display_nameともに揃っている場合のみ
+        テンプレートを適用し、それ以外(発言者不明)はコメント本文のみを返す。
+        """
         comment = self._ng_word_masker.mask(message.content)
 
+        author = message.author
         if isinstance(author, Chatter) and author.name and author.display_name:
             username = _resolve_display_name(
                 self._user_aliases, author.name, author.display_name
             )
-            text = _build_comment_text(self._template, username, comment)
-            print(f"[twitch_bot] コメント受信: {text!r}")
-            self._bridge.submit(text)
-            return
+            return _build_comment_text(self._template, username, comment)
 
-        print(f"[twitch_bot] コメント受信(発言者不明): {comment!r}")
-        self._bridge.submit(comment)
+        return comment
 
 
 class TwitchChatBot:
