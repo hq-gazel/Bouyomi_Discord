@@ -19,6 +19,8 @@ main.py側がsubprocess起動時に以下の環境変数をセットして渡す
     IRODORI_TTS_COMPILE_MODEL (任意、デフォルト "true")
     IRODORI_TTS_COMPILE_DYNAMIC (任意、デフォルト "true")
     TTS_DEBUG_LOGGING (任意、デフォルト "false")
+    IRODORI_TTS_NUM_STEPS (任意、デフォルト "28")
+    IRODORI_TTS_DECODE_MODE (任意、デフォルト "batch")
 
 起動: `<Irodori-TTSのvenv>\\Scripts\\python.exe tts_server.py`
 """
@@ -43,6 +45,7 @@ logger = logging.getLogger(__name__)
 # 持つこの別venvからでも import 可能(本ファイルはプロジェクトルート直下に
 # あるため、スクリプトのあるディレクトリがsys.path[0]となりlibを解決できる)。
 from lib.env_utils import get_bool as _env_bool
+from lib.env_utils import get_int as _env_int
 from lib.env_utils import get_optional as _get_optional
 from lib.env_utils import get_raw as _env_raw
 from lib.env_utils import parse_int as _parse_int
@@ -85,6 +88,8 @@ class _ServerConfig:
     compile_model: bool
     compile_dynamic: bool
     debug_logging: bool
+    num_steps: int
+    decode_mode: str
 
 
 def _load_config() -> _ServerConfig:
@@ -114,6 +119,8 @@ def _load_config() -> _ServerConfig:
     compile_model = _env_bool("IRODORI_TTS_COMPILE_MODEL", True)
     compile_dynamic = _env_bool("IRODORI_TTS_COMPILE_DYNAMIC", True)
     debug_logging = _env_bool("TTS_DEBUG_LOGGING", False)
+    num_steps = _env_int("IRODORI_TTS_NUM_STEPS", 28)
+    decode_mode = _env_raw("IRODORI_TTS_DECODE_MODE") or "batch"
 
     return _ServerConfig(
         irodori_tts_dir=irodori_tts_dir,
@@ -127,6 +134,8 @@ def _load_config() -> _ServerConfig:
         compile_model=compile_model,
         compile_dynamic=compile_dynamic,
         debug_logging=debug_logging,
+        num_steps=num_steps,
+        decode_mode=decode_mode,
     )
 
 
@@ -187,6 +196,8 @@ class _RuntimeState:
         self.ref_latent_path: str | None = None
         # TTS_DEBUG_LOGGING設定値。/synthesizeでlog_fnを渡すかどうかに使う。
         self.debug_logging: bool = False
+        self.num_steps: int = 28
+        self.decode_mode: str = "batch"
 
     @property
     def ready(self) -> bool:
@@ -224,7 +235,14 @@ def _load_runtime_blocking(config: _ServerConfig) -> InferenceRuntime:
     return runtime
 
 
-def _warmup_runtime(runtime: InferenceRuntime, ref_latent_path: str, *, debug_logging: bool) -> None:
+def _warmup_runtime(
+    runtime: InferenceRuntime,
+    ref_latent_path: str,
+    *,
+    debug_logging: bool,
+    num_steps: int,
+    decode_mode: str,
+) -> None:
     """torch.compileの初回コンパイルコストを起動時に前倒しするためのウォームアップ。
 
     /health が200を返す(_state.readyになる)前に実行することで、実際の初回
@@ -236,7 +254,13 @@ def _warmup_runtime(runtime: InferenceRuntime, ref_latent_path: str, *, debug_lo
     logger.info("compileウォームアップを開始します(初回のみ時間がかかります)...")
     log_fn = logger.debug if debug_logging else None
     runtime.synthesize(
-        SamplingRequest(text=_WARMUP_TEXT, ref_latent=ref_latent_path), log_fn=log_fn
+        SamplingRequest(
+            text=_WARMUP_TEXT,
+            ref_latent=ref_latent_path,
+            num_steps=num_steps,
+            decode_mode=decode_mode,
+        ),
+        log_fn=log_fn,
     )
     logger.info("compileウォームアップが完了しました。")
 
@@ -284,13 +308,19 @@ def _cleanup_state() -> None:
 async def _lifespan(_app: FastAPI):
     config = _load_config()
     _state.debug_logging = config.debug_logging
+    _state.num_steps = config.num_steps
+    _state.decode_mode = config.decode_mode
     _state.runtime = _load_runtime_blocking(config)
     _state.ref_latent_path = _precompute_ref_latent(_state.runtime, config.ref_wav)
     if config.compile_model:
         # ウォームアップは_state.ready(=/healthが200を返す)になる前、
         # つまりここで完了させる。失敗時は例外がそのまま伝播し起動が失敗する。
         _warmup_runtime(
-            _state.runtime, _state.ref_latent_path, debug_logging=config.debug_logging
+            _state.runtime,
+            _state.ref_latent_path,
+            debug_logging=config.debug_logging,
+            num_steps=config.num_steps,
+            decode_mode=config.decode_mode,
         )
     yield
     _cleanup_state()
@@ -333,7 +363,13 @@ async def synthesize(body: SynthesizeRequestBody) -> Response:
     def _synthesize_blocking() -> bytes:
         log_fn = logger.debug if _state.debug_logging else None
         result = runtime.synthesize(
-            SamplingRequest(text=text, ref_latent=ref_latent_path), log_fn=log_fn
+            SamplingRequest(
+                text=text,
+                ref_latent=ref_latent_path,
+                num_steps=_state.num_steps,
+                decode_mode=_state.decode_mode,
+            ),
+            log_fn=log_fn,
         )
         # torchaudio(torchcodecバックエンド)がBytesIOへの直接保存に対応していない
         # ため、一時ファイル経由でWAVを書き出してからバイト列として読み込む。

@@ -133,6 +133,8 @@ NGワードは `cfg/ng_words.txt`(Git管理対象)に1行1語で登録されて�
 | `IRODORI_TTS_CODEC_DEVICE` | 任意 | 参照音声エンコード(コーデック)の実行デバイス。デフォルト`auto`(CUDA使用可なら`cuda`、それ以外`cpu`) |
 | `IRODORI_TTS_COMPILE_MODEL` | 任意 | torch.compileによるモデル事前コンパイルを有効にするか。デフォルト`true`。起動時にウォームアップ合成を1回実行する |
 | `IRODORI_TTS_COMPILE_DYNAMIC` | 任意 | torch.compileの動的shape対応を有効にするか。デフォルト`true` |
+| `IRODORI_TTS_NUM_STEPS` | 任意 | 音声合成のEuler積分ステップ数。デフォルト`28`(Irodori-TTS本体既定の`40`より速度寄りに調整、精度と速度のバランス値) |
+| `IRODORI_TTS_DECODE_MODE` | 任意 | 候補デコード方式。デフォルト`batch`(`sequential`より高速、VRAM使用量は増加) |
 
 `IRODORI_TTS_HF_CHECKPOINT` と `IRODORI_TTS_CHECKPOINT` はどちらか一方の設定が必須(両方未設定はエラー)。
 
